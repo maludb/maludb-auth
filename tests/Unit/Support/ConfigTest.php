@@ -1,4 +1,6 @@
 <?php
+declare(strict_types=1);
+
 namespace Maludb\Auth\Tests\Unit\Support;
 
 use Maludb\Auth\Support\Config;
@@ -16,5 +18,17 @@ final class ConfigTest extends TestCase
     {
         $c = new Config([]);
         $this->assertSame('fallback', $c->get('nope.here', 'fallback'));
+    }
+
+    public function test_get_returns_default_when_descending_into_scalar(): void
+    {
+        $c = new Config(['jwt' => ['exp' => 3600]]);
+        $this->assertSame('fallback', $c->get('jwt.exp.deeper', 'fallback'));
+    }
+
+    public function test_get_returns_stored_null_value(): void
+    {
+        $c = new Config(['jwt' => ['exp' => null]]);
+        $this->assertNull($c->get('jwt.exp', 'fallback'));
     }
 }

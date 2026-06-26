@@ -17,7 +17,7 @@ final class Env
     public static function get(string $key, ?string $default = null): ?string
     {
         $v = $_ENV[$key] ?? getenv($key);
-        return $v === false ? $default : ($v ?? $default);
+        return $v === false ? $default : $v;
     }
 
     public static function bool(string $key, bool $default = false): bool
