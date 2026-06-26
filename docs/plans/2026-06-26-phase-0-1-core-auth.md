@@ -487,7 +487,7 @@ final class Response
     {
         return new self(
             status: $status,
-            body: json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+            body: json_encode($data, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR),
             headers: ['Content-Type' => 'application/json'],
         );
     }
@@ -521,6 +521,16 @@ final class Response
         return $this->withCookie($name, '', ['expires' => 0, 'path' => $path, 'maxage' => -1]);
     }
 
+    /** Pure, unit-testable cookie-expiry resolution (avoids the `??`/`===` precedence trap). */
+    public static function resolveCookieExpiry(array $o): int
+    {
+        $maxage = $o['maxage'] ?? null;
+        if ($maxage !== null) {
+            return $maxage < 0 ? 1 : time() + $maxage; // <0 => epoch-past => browser deletes
+        }
+        return $o['expires'] ?? 0; // 0 => session cookie
+    }
+
     public function send(): void
     {
         http_response_code($this->status);
@@ -530,7 +540,7 @@ final class Response
         foreach ($this->cookies as $c) {
             $o = $c['options'];
             setcookie($c['name'], $c['value'], [
-                'expires' => $o['maxage'] ?? -1 === -1 ? ($o['expires'] ?? 0) : time() + ($o['maxage']),
+                'expires' => self::resolveCookieExpiry($o),
                 'path' => $o['path'], 'secure' => $o['secure'], 'httponly' => $o['httponly'],
                 'samesite' => $o['samesite'],
             ]);
@@ -651,7 +661,7 @@ final class Router
             foreach ($this->routes as $route) {
                 if ($route['method'] !== $req->method) continue;
                 if (preg_match($route['pattern'], $req->path, $m)) {
-                    $params = array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY);
+                    $params = array_map('rawurldecode', array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY));
                     return ($route['handler'])($req, $params);
                 }
             }
