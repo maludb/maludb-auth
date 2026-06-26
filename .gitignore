@@ -1,0 +1,8 @@
+/vendor/
+/keys/
+.env
+.env.*
+!.env.example
+*.log
+.DS_Store
+/.phpunit.result.cache
