@@ -27,4 +27,26 @@ final class ResponseTest extends TestCase
         $this->assertSame('', $r->cookies[1]['value']);
         $this->assertSame(0, $r->cookies[1]['options']['expires']); // cleared
     }
+
+    public function test_resolve_cookie_expiry_deletes_on_negative_maxage(): void
+    {
+        // withClearedCookie sets maxage=-1 → must resolve to an epoch-past value.
+        $this->assertSame(1, Response::resolveCookieExpiry(['maxage' => -1]));
+    }
+
+    public function test_resolve_cookie_expiry_future_on_positive_maxage(): void
+    {
+        $this->assertGreaterThan(time(), Response::resolveCookieExpiry(['maxage' => 3600]));
+    }
+
+    public function test_resolve_cookie_expiry_session_cookie_when_no_maxage(): void
+    {
+        $this->assertSame(0, Response::resolveCookieExpiry([]));
+    }
+
+    public function test_json_throws_on_invalid_utf8(): void
+    {
+        $this->expectException(\JsonException::class);
+        Response::json(['bad' => "\xB1\x31"]);
+    }
 }

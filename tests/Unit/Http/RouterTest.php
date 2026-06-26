@@ -34,6 +34,15 @@ final class RouterTest extends TestCase
         $this->assertSame('{"id":"42"}', $res->body);
     }
 
+    public function test_path_params_are_url_decoded(): void
+    {
+        $router = new Router();
+        $router->add('GET', '/admin/users/{id}',
+            fn(Request $r, array $p) => Response::json(['id' => $p['id']]));
+        $res = $router->dispatch($this->req('GET', '/admin/users/a%20b'));
+        $this->assertSame('{"id":"a b"}', $res->body);
+    }
+
     public function test_middleware_short_circuits(): void
     {
         $router = new Router();

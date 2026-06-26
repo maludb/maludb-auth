@@ -25,7 +25,10 @@ final class Router
             foreach ($this->routes as $route) {
                 if ($route['method'] !== $req->method) continue;
                 if (preg_match($route['pattern'], $req->path, $m)) {
-                    $params = array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY);
+                    $params = array_map(
+                        'rawurldecode',
+                        array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY)
+                    );
                     return ($route['handler'])($req, $params);
                 }
             }
