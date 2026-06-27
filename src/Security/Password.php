@@ -35,6 +35,8 @@ final class Password
 
     private function assertValid(string $password): void
     {
+        // strlen() is intentionally byte-based: bcrypt operates on and truncates
+        // at 72 *bytes*, and the min-length floor is likewise a byte count.
         if (strlen($password) < $this->minLength) {
             throw new \InvalidArgumentException('Password too short.');
         }

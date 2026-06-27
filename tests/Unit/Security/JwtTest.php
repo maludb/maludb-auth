@@ -45,8 +45,70 @@ final class JwtTest extends TestCase
     {
         [$priv, $pub] = $this->keys();
         $jwt = new Jwt($priv, $pub, 'key-1', 'iss', 'aud');
-        $token = $jwt->issue(['sub' => 'x'], -10); // already expired
+        $token = $jwt->issue(['sub' => 'x'], -100); // expired well beyond the leeway window
         $this->expectException(\Firebase\JWT\ExpiredException::class);
+        $jwt->verify($token);
+    }
+
+    public function test_alg_none_token_is_rejected(): void
+    {
+        [$priv, $pub] = $this->keys();
+        $jwt = new Jwt($priv, $pub, 'key-1', 'iss', 'aud');
+
+        $b64 = static fn (string $s): string => rtrim(strtr(base64_encode($s), '+/', '-_'), '=');
+        $header = $b64('{"alg":"none","typ":"JWT"}');
+        $payload = $b64(json_encode(['sub' => 'x', 'iss' => 'iss', 'aud' => 'aud']));
+        $token = $header . '.' . $payload . '.'; // empty signature
+
+        $this->expectException(\Exception::class);
+        $jwt->verify($token);
+    }
+
+    public function test_hs256_token_signed_with_public_key_is_rejected(): void
+    {
+        [$priv, $pub] = $this->keys();
+        $jwt = new Jwt($priv, $pub, 'key-1', 'iss', 'aud');
+
+        // Classic algorithm-confusion attack: forge an HS256 token using the
+        // public key (known to everyone) as the HMAC secret. Pinning to RS256
+        // must reject it.
+        $token = \Firebase\JWT\JWT::encode(['sub' => 'x', 'iss' => 'iss', 'aud' => 'aud'], $pub, 'HS256');
+
+        $this->expectException(\UnexpectedValueException::class);
+        $jwt->verify($token);
+    }
+
+    public function test_wrong_issuer_is_rejected(): void
+    {
+        [$priv, $pub] = $this->keys();
+        $jwt = new Jwt($priv, $pub, 'key-1', 'iss', 'aud');
+
+        $now = time();
+        $token = \Firebase\JWT\JWT::encode(
+            ['sub' => 'x', 'iss' => 'evil', 'aud' => 'aud', 'iat' => $now, 'exp' => $now + 3600],
+            $priv,
+            'RS256',
+            'key-1',
+        );
+
+        $this->expectException(\Maludb\Auth\Exceptions\InvalidTokenException::class);
+        $jwt->verify($token);
+    }
+
+    public function test_wrong_audience_is_rejected(): void
+    {
+        [$priv, $pub] = $this->keys();
+        $jwt = new Jwt($priv, $pub, 'key-1', 'iss', 'aud');
+
+        $now = time();
+        $token = \Firebase\JWT\JWT::encode(
+            ['sub' => 'x', 'iss' => 'iss', 'aud' => 'evil', 'iat' => $now, 'exp' => $now + 3600],
+            $priv,
+            'RS256',
+            'key-1',
+        );
+
+        $this->expectException(\Maludb\Auth\Exceptions\InvalidTokenException::class);
         $jwt->verify($token);
     }
 }
