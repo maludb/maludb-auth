@@ -19,8 +19,9 @@ final class Cors implements MiddlewareInterface
 
     /**
      * @param string|null $siteUrl  Canonical site origin (SITE_URL).
-     * @param string[]    $allowList Patterns from URI_ALLOW_LIST; a trailing
-     *                               `/*` (or `*`) is treated as a prefix wildcard.
+     * @param string[]    $allowList Entries from URI_ALLOW_LIST. Each may carry a
+     *                               path or `/*` (it doubles as the redirect-URL
+     *                               allowlist); only the derived origin is matched.
      */
     public function __construct(
         private ?string $siteUrl = null,
@@ -41,6 +42,11 @@ final class Cors implements MiddlewareInterface
 
     private function decorate(Response $response, ?string $allowedOrigin): Response
     {
+        // Vary on Origin for EVERY response the middleware touches (allowed,
+        // disallowed, and preflight) so shared caches never serve a credentialed
+        // allow-origin to a different origin.
+        $response = $response->withHeader('Vary', 'Origin');
+
         if ($allowedOrigin === null) {
             return $response;
         }
@@ -49,22 +55,24 @@ final class Cors implements MiddlewareInterface
             ->withHeader('Access-Control-Allow-Origin', $allowedOrigin)
             ->withHeader('Access-Control-Allow-Credentials', 'true')
             ->withHeader('Access-Control-Allow-Headers', self::ALLOW_HEADERS)
-            ->withHeader('Access-Control-Allow-Methods', self::ALLOW_METHODS)
-            ->withHeader('Vary', 'Origin');
+            ->withHeader('Access-Control-Allow-Methods', self::ALLOW_METHODS);
     }
 
+    /**
+     * A request Origin is allowed iff it EXACTLY equals the origin derived from
+     * SITE_URL or any URI_ALLOW_LIST entry. Exact comparison only — no prefix
+     * matching — to prevent credentialed-CORS bypasses such as
+     * `http://localhost:3000.evil.com`, `http://localhost:30000`, or
+     * `http://localhost:3000@evil.com`.
+     */
     private function isAllowed(string $origin): bool
     {
-        if ($this->siteUrl !== null && $this->siteUrl !== '' && $origin === $this->siteUrl) {
+        if ($this->siteUrl !== null && $origin === $this->originOf($this->siteUrl)) {
             return true;
         }
 
-        foreach ($this->allowList as $pattern) {
-            $pattern = trim($pattern);
-            if ($pattern === '') {
-                continue;
-            }
-            if ($this->matches($origin, $pattern)) {
+        foreach ($this->allowList as $entry) {
+            if ($origin === $this->originOf((string) $entry)) {
                 return true;
             }
         }
@@ -72,15 +80,21 @@ final class Cors implements MiddlewareInterface
         return false;
     }
 
-    private function matches(string $origin, string $pattern): bool
+    /**
+     * Derive the scheme://host[:port] origin from a configured URL via parse_url.
+     * Entries may include a path or `/*`; everything but the origin is dropped.
+     * Returns null for unparseable entries so they never match a request origin.
+     */
+    private function originOf(string $url): ?string
     {
-        // Strip a trailing path-wildcard so `http://localhost:3000/*` matches the
-        // bare origin `http://localhost:3000`.
-        $prefix = preg_replace('#/?\*$#', '', $pattern);
-        if ($prefix === $origin) {
-            return true;
+        $p = parse_url(trim($url));
+        if (empty($p['scheme']) || empty($p['host'])) {
+            return null;
         }
-
-        return str_ends_with($pattern, '*') && str_starts_with($origin, $prefix);
+        $origin = $p['scheme'] . '://' . $p['host'];
+        if (isset($p['port'])) {
+            $origin .= ':' . $p['port'];
+        }
+        return $origin;
     }
 }
