@@ -1318,6 +1318,7 @@ final class Jwt
         private string $kid,
         private string $issuer,
         private string $audience,
+        private int $leeway = 30, // clock-skew tolerance (seconds) for exp/iat/nbf
     ) {}
 
     /** @param array<string,mixed> $claims */
@@ -1334,11 +1335,27 @@ final class Jwt
         return FirebaseJwt::encode($payload, $this->privateKeyPem, 'RS256', $this->kid);
     }
 
-    /** @return array<string,mixed> */
+    /**
+     * Verify signature, exp/iat/nbf (with leeway), AND issuer/audience.
+     * firebase/php-jwt does NOT check iss/aud — we must, or verify() isn't a
+     * complete validator. Throws InvalidTokenException on iss/aud mismatch and
+     * the firebase JWT exceptions (ExpiredException, SignatureInvalidException,
+     * UnexpectedValueException for alg confusion) otherwise.
+     *
+     * @return array<string,mixed>
+     */
     public function verify(string $token): array
     {
+        FirebaseJwt::$leeway = $this->leeway;
         $decoded = FirebaseJwt::decode($token, new Key($this->publicKeyPem, 'RS256'));
-        return json_decode(json_encode($decoded), true);
+        $claims = json_decode(json_encode($decoded), true);
+        if (!is_array($claims)) {
+            throw new InvalidTokenException('Malformed token claims.');
+        }
+        if (($claims['iss'] ?? null) !== $this->issuer || ($claims['aud'] ?? null) !== $this->audience) {
+            throw new InvalidTokenException('Invalid token issuer or audience.');
+        }
+        return $claims;
     }
 }
 ```
