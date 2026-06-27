@@ -6,3 +6,4 @@
 *.log
 .DS_Store
 /.phpunit.result.cache
+/.phpunit.cache/
