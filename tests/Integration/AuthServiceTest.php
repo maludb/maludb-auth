@@ -49,7 +49,7 @@ final class AuthServiceTest extends IntegrationTestCase
     }
 
     /** @param array<string,mixed> $configOverrides */
-    private function authService(array $configOverrides = []): AuthService
+    private function authService(array $configOverrides = [], ?Password $password = null): AuthService
     {
         $config = new Config(array_replace_recursive([
             'jwt' => ['exp' => 3600, 'audience' => 'authenticated'],
@@ -76,10 +76,11 @@ final class AuthServiceTest extends IntegrationTestCase
         return new AuthService(
             $users,
             $tokenService,
-            new Password((int) $config->get('password.min_length', 12)),
+            $password ?? new Password((int) $config->get('password.min_length', 12)),
             new AuditRepository(self::$pdo),
             new IdentityRepository(self::$pdo),
             $config,
+            self::$pdo,
         );
     }
 
@@ -214,6 +215,35 @@ final class AuthServiceTest extends IntegrationTestCase
         // Routes through Password::verify against dummyHash() so no timing leak.
         $this->expectException(InvalidCredentialsException::class);
         $svc->login('ghost@example.com', self::PASSWORD, '203.0.113.9', 'ua');
+    }
+
+    public function test_login_unknown_email_still_calls_verify_no_timing_oracle(): void
+    {
+        // Regression guard: an unknown email must still run a bcrypt verify (against
+        // the dummy hash) so response time cannot reveal whether the user exists. A
+        // future early-return that skipped verify would silently reintroduce the
+        // enumeration oracle; this spy fails loudly if that ever happens.
+        $spy = new class(12) extends Password {
+            public int $verifyCalls = 0;
+
+            public function verify(string $password, string $hash): bool
+            {
+                $this->verifyCalls++;
+
+                return parent::verify($password, $hash);
+            }
+        };
+
+        $svc = $this->authService([], $spy);
+
+        try {
+            $svc->login('nobody@example.com', self::PASSWORD, '203.0.113.9', 'ua');
+            $this->fail('Expected InvalidCredentialsException for unknown email.');
+        } catch (InvalidCredentialsException) {
+            // expected
+        }
+
+        $this->assertSame(1, $spy->verifyCalls, 'verify() must run even when the user does not exist.');
     }
 
     public function test_login_banned_user_throws(): void

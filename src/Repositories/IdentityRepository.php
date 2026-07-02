@@ -16,7 +16,7 @@ use PDO;
  * email is normalized (lowercase + trim) via EmailNormalizer to match the citext
  * column and the way UserRepository stores user emails.
  */
-final class IdentityRepository
+class IdentityRepository
 {
     public function __construct(private PDO $pdo) {}
 

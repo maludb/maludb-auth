@@ -13,6 +13,7 @@ use Maludb\Auth\Repositories\UserRepository;
 use Maludb\Auth\Security\Password;
 use Maludb\Auth\Support\Config;
 use Maludb\Auth\Support\EmailNormalizer;
+use PDO;
 
 /**
  * Orchestrates email+password signup and login over the repositories and
@@ -28,6 +29,9 @@ use Maludb\Auth\Support\EmailNormalizer;
  *    time. The existence + verify checks are combined AFTER verify has run.
  *  - Failures surface as a single generic InvalidCredentialsException so the
  *    outside cannot distinguish "no such user" from "wrong password".
+ *  - signup's three writes (create user + create identity + mark confirmed) are
+ *    atomic: they run in a single transaction so a mid-way failure cannot leave
+ *    an orphaned user row holding the unique email and blocking a retry.
  */
 final class AuthService
 {
@@ -38,6 +42,7 @@ final class AuthService
         private AuditRepository $audit,
         private IdentityRepository $identities,
         private Config $config,
+        private PDO $pdo,
     ) {}
 
     /**
@@ -65,41 +70,76 @@ final class AuthService
 
         $autoconfirm = (bool) $this->config->get('signup.autoconfirm', true);
 
-        $user = $this->users->create([
-            'email' => $normalizedEmail,
-            'encrypted_password' => $hash,
-            // Server-controlled: never sourced from caller input.
-            'raw_app_meta_data' => ['provider' => 'email', 'providers' => ['email']],
-            'raw_user_meta_data' => $profile,
-        ]);
+        // Atomicity: create-user + create-identity + mark-confirmed must all commit
+        // together or not at all, else a failed identity insert would leave an
+        // orphaned user holding the unique email. Own the transaction only when one
+        // isn't already active (mirrors TokenService::rotate/beginIfPossible); under
+        // the integration harness's outer transaction we run inline and let it own
+        // atomicity.
+        $owns = $this->beginIfPossible();
 
-        // Supabase uses the user id as the email-provider subject (provider_id).
-        $this->identities->create([
-            'user_id' => $user['id'],
-            'provider' => 'email',
-            'provider_id' => $user['id'],
-            'identity_data' => [
-                'sub' => $user['id'],
+        try {
+            $user = $this->users->create([
                 'email' => $normalizedEmail,
-                'email_verified' => $autoconfirm,
-                'provider' => 'email',
-            ],
-            'email' => $normalizedEmail,
-        ]);
+                'encrypted_password' => $hash,
+                // Server-controlled: never sourced from caller input.
+                'raw_app_meta_data' => ['provider' => 'email', 'providers' => ['email']],
+                'raw_user_meta_data' => $profile,
+            ]);
 
-        if ($autoconfirm) {
-            $this->users->markEmailConfirmed($user['id']);
-            // Reload so the returned user reflects the confirmation timestamp
-            // (and the generated confirmed_at column) rather than the pre-confirm row.
-            $refreshed = $this->users->findById($user['id']);
-            if ($refreshed !== null) {
-                $user = $refreshed;
+            // Supabase uses the user id as the email-provider subject (provider_id).
+            $this->identities->create([
+                'user_id' => $user['id'],
+                'provider' => 'email',
+                'provider_id' => $user['id'],
+                'identity_data' => [
+                    'sub' => $user['id'],
+                    'email' => $normalizedEmail,
+                    'email_verified' => $autoconfirm,
+                    'provider' => 'email',
+                ],
+                'email' => $normalizedEmail,
+            ]);
+
+            if ($autoconfirm) {
+                $this->users->markEmailConfirmed($user['id']);
+                // Reload so the returned user reflects the confirmation timestamp
+                // (and the generated confirmed_at column) rather than the pre-confirm row.
+                $refreshed = $this->users->findById($user['id']);
+                if ($refreshed !== null) {
+                    $user = $refreshed;
+                }
             }
+
+            if ($owns) {
+                $this->pdo->commit();
+            }
+        } catch (\Throwable $e) {
+            if ($owns && $this->pdo->inTransaction()) {
+                $this->pdo->rollBack();
+            }
+            throw $e;
         }
 
+        // Audit outside the transaction: the signup itself has committed, and the
+        // audit row should survive even if this specific write hiccups.
         $this->audit->record('signup', ['user_id' => $user['id']], $ip);
 
         return $user;
+    }
+
+    /**
+     * Begin a transaction only if one isn't already active. Returns true if this
+     * call owns the transaction (and is therefore responsible for commit/rollback).
+     */
+    private function beginIfPossible(): bool
+    {
+        if ($this->pdo->inTransaction()) {
+            return false;
+        }
+        $this->pdo->beginTransaction();
+
+        return true;
     }
 
     /**
