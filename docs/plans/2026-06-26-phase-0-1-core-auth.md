@@ -1679,7 +1679,7 @@ Create exceptions `InvalidRefreshTokenException`, `RefreshTokenReuseException` u
 **Step 3: Implement** `AuthService`:
 - ctor: `UserRepository`, `TokenService`, `Password`, `AuditRepository`, `Config`.
 - `signup`: check `signup.disabled`; normalize email; `Password::hash`; `UserRepository::create` with `raw_app_meta_data = {provider:'email', providers:['email']}`; create `email` identity; if autoconfirm → `markEmailConfirmed`; audit `signup`. (Email-confirmation sending is Phase 2; until then autoconfirm is on.)
-- `login`: normalize; `findByEmail`; `$ok = $password->verify($pw, $user['encrypted_password'] ?? $dummy) && $user && !banned`; if `$user` and `needsRehash` → update hash; on failure throw `InvalidCredentialsException`; on success `issueForUser(user, ip, ua, 'aal1', ['password'])`, `setLastSignInAt`, audit `login`.
+- `login`: normalize; `findByEmail`. **Run bcrypt verify UNCONDITIONALLY and FIRST** (do not short-circuit it away when the user is missing, or you reintroduce a timing oracle): `$hash = ($user['encrypted_password'] ?? null) ?: $password->dummyHash(); $ok = $password->verify($pw, $hash);`. Then require `$user !== null && $ok`; on failure throw `InvalidCredentialsException` (generic). **Only after** the password check, test the ban (`banned_until` in the future → `UserBannedException`) so a wrong password on a banned account still looks generic. If `$user` and `needsRehash` → update hash. On success `issueForUser(user, ip, ua, 'aal1', ['password'])`, `setLastSignInAt`, audit `login`. Wrap `signup`'s user+identity+confirm writes in a transaction (nested-safe via `inTransaction()`, like `TokenService`) so a failed identity insert can't orphan a user.
 
 **Step 4:** Run → PASS. Commit.
 
