@@ -22,17 +22,6 @@ final class TokenResponder
     public const REFRESH_COOKIE = 'mb-refresh-token';
     public const REFRESH_COOKIE_PATH = '/auth/v1/token';
 
-    /** Columns that must never appear in a response body. */
-    private const SENSITIVE = [
-        'encrypted_password',
-        'confirmation_token',
-        'recovery_token',
-        'email_change_token_new',
-        'email_change_token_current',
-        'phone_change_token',
-        'reauthentication_token',
-    ];
-
     /**
      * @param array{secure?:bool,samesite?:string} $cookieCfg
      */
@@ -46,17 +35,18 @@ final class TokenResponder
     }
 
     /**
-     * Strip sensitive fields from a user row before it enters a response body.
+     * Reduce a user row to the allowlisted, response-safe public shape.
+     *
+     * Delegates to UserPresenter::toPublic() so the allowlist lives in one place
+     * (closing the earlier denylist gap: a new sensitive column can no longer
+     * slip into a response body just because it wasn't explicitly denied).
      *
      * @param array<string,mixed> $user
      * @return array<string,mixed>
      */
     public static function publicUser(array $user): array
     {
-        foreach (self::SENSITIVE as $field) {
-            unset($user[$field]);
-        }
-        return $user;
+        return UserPresenter::toPublic($user);
     }
 
     /** @param array<string,mixed> $user */
