@@ -31,6 +31,7 @@ final class NoEncryptedPasswordLeakTest extends ControllerTestCase
             $this->tokenService($config),
             $this->responder(),
             $config,
+            $this->otpService($config),
         );
         $bodies[] = $signup->handle(
             new Request(method: 'POST', path: '/signup', headers: ['User-Agent' => 'p'],

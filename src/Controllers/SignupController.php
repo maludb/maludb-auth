@@ -12,6 +12,7 @@ use Maludb\Auth\Http\TokenResponder;
 use Maludb\Auth\Http\UserPresenter;
 use Maludb\Auth\Http\Validator;
 use Maludb\Auth\Services\AuthService;
+use Maludb\Auth\Services\OtpService;
 use Maludb\Auth\Services\TokenService;
 use Maludb\Auth\Support\Config;
 
@@ -31,6 +32,7 @@ final class SignupController
         private TokenService $tokens,
         private TokenResponder $responder,
         private Config $config,
+        private OtpService $otp,
     ) {}
 
     public function handle(Request $request, RequestContext $context): Response
@@ -70,6 +72,17 @@ final class SignupController
                     (array) $this->config->get('cookie', []),
                 );
             }
+
+            // Confirmation required: mint + mail the confirmation token. The
+            // response stays the bare user — no session until /verify.
+            $redirectTo = $input['redirect_to'] ?? '';
+            $this->otp->send(
+                'confirmation',
+                $email,
+                $request->ip,
+                createUser: false,
+                redirectTo: is_string($redirectTo) ? $redirectTo : '',
+            );
 
             return Response::json(['user' => UserPresenter::toPublic($user)], 200);
         } catch (\Throwable $e) {

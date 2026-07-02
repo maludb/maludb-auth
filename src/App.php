@@ -215,7 +215,7 @@ final class App
         $b = self::BASE_PATH;
 
         // Controllers that touch the per-request context are rebuilt per request.
-        $signup = new SignupController($this->auth, $this->tokens, $this->responder, $this->config);
+        $signup = new SignupController($this->auth, $this->tokens, $this->responder, $this->config, $this->otp);
         $token = new TokenController($this->auth, $this->tokens, $this->responder, $this->config);
         $logout = new LogoutController($this->sessions, $this->audit);
         $user = new UserController(

@@ -18,6 +18,7 @@ final class SignupEndpointTest extends ControllerTestCase
             $this->tokenService($config),
             $this->responder(),
             $config,
+            $this->otpService($config),
         );
     }
 
@@ -77,6 +78,56 @@ final class SignupEndpointTest extends ControllerTestCase
         $this->assertArrayNotHasKey('access_token', $body);
         $this->assertSame('pending@example.com', $body['user']['email']);
         $this->assertNull($body['user']['email_confirmed_at']);
+
+        // A confirmation mail with a signup verify link + code went out.
+        $this->assertCount(1, $this->mailer->sent);
+        $this->assertSame('pending@example.com', $this->mailer->last()['to']);
+        $this->assertStringContainsString('type=signup', $this->mailer->last()['text']);
+    }
+
+    public function test_confirmation_flow_verify_then_password_login(): void
+    {
+        $overrides = ['signup' => ['autoconfirm' => false]];
+        $config = $this->testConfig($overrides);
+        $c = $this->controller($overrides);
+        $otp = $this->otpService($config); // shares the DB rows; fresh outbox unused
+
+        $c->handle(
+            $this->request(['email' => 'flow@example.com', 'password' => self::PASSWORD]),
+            new RequestContext(),
+        );
+
+        // Login before confirmation is refused with a distinct (post-credential) error.
+        try {
+            $this->authService($config)->login('flow@example.com', self::PASSWORD, 'ip', 'ua');
+            $this->fail('Expected EmailNotConfirmedException');
+        } catch (\Maludb\Auth\Exceptions\EmailNotConfirmedException) {
+        }
+
+        // Redeem the mailed code via the OTP machinery -> confirmed + session.
+        $row = (new \Maludb\Auth\Repositories\OneTimeTokenRepository(self::$pdo))
+            ->findForUser((string) $this->users()->findByEmail('flow@example.com')['id'], 'confirmation');
+        $this->assertNotNull($row);
+        $issued = $otp->verify('confirmation', null, null, $row['token_hash'], 'ip', 'ua');
+        $this->assertNotEmpty($issued->accessToken);
+
+        // Password login now succeeds.
+        $login = $this->authService($config)->login('flow@example.com', self::PASSWORD, 'ip', 'ua');
+        $this->assertNotEmpty($login->accessToken);
+    }
+
+    public function test_wrong_password_on_unconfirmed_account_stays_generic(): void
+    {
+        $overrides = ['signup' => ['autoconfirm' => false]];
+        $config = $this->testConfig($overrides);
+        $this->controller($overrides)->handle(
+            $this->request(['email' => 'generic@example.com', 'password' => self::PASSWORD]),
+            new RequestContext(),
+        );
+
+        // Wrong password must NOT reveal the (unconfirmed) account exists.
+        $this->expectException(\Maludb\Auth\Exceptions\InvalidCredentialsException::class);
+        $this->authService($config)->login('generic@example.com', 'wrong-password-here', 'ip', 'ua');
     }
 
     public function test_duplicate_email_returns_generic_200_no_leak(): void
