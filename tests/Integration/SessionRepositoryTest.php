@@ -200,6 +200,20 @@ final class SessionRepositoryTest extends IntegrationTestCase
         $this->assertTrue((bool) $this->tokens()->findByHash('r2')['revoked']);
     }
 
+    public function test_revoke_if_active_is_idempotent_cas(): void
+    {
+        $userId = $this->makeUser();
+        $session = $this->sessions()->create($userId, 'c', '1.2.3.4', 'ua', null);
+        $issued = $this->tokens()->issue($session['id'], $userId, 'cas-token');
+
+        // First call wins the CAS and flips the row.
+        $this->assertTrue($this->tokens()->revokeIfActive((int) $issued['id']));
+        // Second call loses: the row is already revoked, nothing to flip.
+        $this->assertFalse($this->tokens()->revokeIfActive((int) $issued['id']));
+
+        $this->assertTrue((bool) $this->tokens()->findByHash('cas-token')['revoked']);
+    }
+
     public function test_find_active_by_session_excludes_revoked(): void
     {
         $userId = $this->makeUser();

@@ -223,6 +223,9 @@ final class TokenServiceTest extends IntegrationTestCase
         $retry = $svc->refresh($first->refreshToken, '203.0.113.1', 'ua');
         $this->assertSame($first->sessionId, $retry->sessionId);
         $this->assertNotEmpty($retry->accessToken);
+        // No new refresh token is minted on a grace-window retry: null tells
+        // downstream to leave the client's existing refresh credential untouched.
+        $this->assertNull($retry->refreshToken);
 
         // The active token from the real rotation still works afterward.
         $claims = $this->jwt()->verify($retry->accessToken);
@@ -232,5 +235,73 @@ final class TokenServiceTest extends IntegrationTestCase
         $tokens = new RefreshTokenRepository(self::$pdo);
         $activeRow = $tokens->findByHash((new TokenHash())->hash($second->refreshToken));
         $this->assertFalse((bool) $activeRow['revoked']);
+    }
+
+    public function test_grace_window_rejects_expired_session(): void
+    {
+        // Grace window is open, but the session is past its inactivity timeout:
+        // we must NOT mint a token — instead revoke the family and throw.
+        $svc = $this->tokenService([
+            'refresh' => ['reuse_interval' => 3600],
+            'session' => ['inactivity_timeout' => 1],
+        ]);
+        $user = $this->createUser();
+        $first = $svc->issueForUser($user, '203.0.113.1', 'ua', 'aal1', ['password']);
+        $second = $svc->refresh($first->refreshToken, '203.0.113.1', 'ua');
+
+        // Force the session to look inactive: created/refreshed far in the past.
+        self::$pdo->prepare(
+            "UPDATE auth.sessions SET created_at = now() - interval '1 hour',
+             refreshed_at = now() - interval '1 hour' WHERE id = :id"
+        )->execute([':id' => $first->sessionId]);
+
+        try {
+            $svc->refresh($first->refreshToken, '203.0.113.1', 'ua');
+            $this->fail('Expected SessionExpiredException.');
+        } catch (\Maludb\Auth\Exceptions\SessionExpiredException) {
+            // expected
+        }
+
+        // The whole family was revoked, including the previously-active token.
+        $tokens = new RefreshTokenRepository(self::$pdo);
+        $activeRow = $tokens->findByHash((new TokenHash())->hash($second->refreshToken));
+        $this->assertTrue((bool) $activeRow['revoked']);
+    }
+
+    // --- I2b: CAS-lost rotation path -------------------------------------
+
+    public function test_rotation_cas_lost_issues_access_only_no_fork(): void
+    {
+        $svc = $this->tokenService();
+        $user = $this->createUser();
+        $first = $svc->issueForUser($user, '203.0.113.1', 'ua', 'aal1', ['password']);
+
+        $tokens = new RefreshTokenRepository(self::$pdo);
+        $oldRow = $tokens->findByHash((new TokenHash())->hash($first->refreshToken));
+
+        // Simulate a concurrent rotation that already consumed this token: flip it
+        // to revoked out-of-band, then also seed the winner's replacement so an
+        // active sibling exists (as the winner would have created).
+        $tokens->revokeIfActive((int) $oldRow['id']);
+        $winnerRaw = (new TokenHash())->random();
+        $tokens->issue($first->sessionId, $user['id'], (new TokenHash())->hash($winnerRaw), $oldRow['token_hash']);
+
+        // Reflectively drive the private rotate() so we hit the CAS-lost branch
+        // directly (findByHash would otherwise route a revoked token to reuse).
+        $session = (new SessionRepository(self::$pdo))->find($first->sessionId);
+        $ref = new \ReflectionMethod($svc, 'rotate');
+        $ref->setAccessible(true);
+        /** @var \Maludb\Auth\Dto\IssuedTokens $result */
+        $result = $ref->invoke($svc, $oldRow, $session, $user);
+
+        // CAS lost: access token issued, but NO new refresh token.
+        $this->assertNotEmpty($result->accessToken);
+        $this->assertNull($result->refreshToken);
+        $this->assertSame($first->sessionId, $result->sessionId);
+
+        // No fork: exactly one active token (the winner's), no second sibling.
+        $active = $tokens->findActiveBySession($first->sessionId);
+        $this->assertCount(1, $active);
+        $this->assertSame((new TokenHash())->hash($winnerRaw), $active[0]['token_hash']);
     }
 }

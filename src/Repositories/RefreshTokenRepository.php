@@ -9,10 +9,13 @@ use PDO;
  * Data access for auth.refresh_tokens. Straightforward CRUD; all writes use
  * prepared statements. Token hashes are opaque strings (SHA-256 hex) produced
  * upstream — this repository never hashes.
+ *
+ * Not final: TokenService's rollback test subclasses this to inject a failing
+ * issue() (a test double). Production code should not extend it.
  */
-final class RefreshTokenRepository
+class RefreshTokenRepository
 {
-    public function __construct(private PDO $pdo) {}
+    public function __construct(protected PDO $pdo) {}
 
     /**
      * @return array<string,mixed> The issued token row (revoked = false).
@@ -52,6 +55,24 @@ final class RefreshTokenRepository
             'UPDATE auth.refresh_tokens SET revoked = true, updated_at = now() WHERE id = :id'
         );
         $stmt->execute([':id' => $id]);
+    }
+
+    /**
+     * Compare-and-swap revoke: flip revoked false → true atomically.
+     *
+     * @return bool true iff THIS call flipped the row (it was active and is now
+     *   revoked). false means the row was already revoked — a concurrent rotation
+     *   won the race, and the caller must not issue a competing new token.
+     */
+    public function revokeIfActive(int $id): bool
+    {
+        $stmt = $this->pdo->prepare(
+            'UPDATE auth.refresh_tokens SET revoked = true, updated_at = now()
+             WHERE id = :id AND revoked = false'
+        );
+        $stmt->execute([':id' => $id]);
+
+        return $stmt->rowCount() === 1;
     }
 
     public function revokeAllForSession(string $sessionId): void

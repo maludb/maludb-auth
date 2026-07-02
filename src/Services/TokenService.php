@@ -141,7 +141,7 @@ final class TokenService
      *
      * Note: the grace path cannot return a usable raw refresh token (only the hash
      * is stored). The client keeps using the token it already holds; refreshToken
-     * is intentionally empty in that response.
+     * is null in that response.
      *
      * @param array<string,mixed> $row The revoked refresh-token row.
      * @return IssuedTokens (grace-window path only; the theft path throws)
@@ -157,21 +157,17 @@ final class TokenService
             $session = $this->sessions->find($sessionId);
             $user = $this->users->findById($row['user_id']);
             if ($session !== null && $user !== null) {
-                $accessToken = $this->issueAccessToken(
-                    $user,
-                    $sessionId,
-                    (string) $session['aal'],
-                    $this->amrMethods($session),
-                );
+                // Even a benign retry must not mint a token for an expired session:
+                // validate first, and on failure fall through to the strict path
+                // (revoke the family + throw), exactly like refresh().
+                try {
+                    $this->sessionService->assertValid($session, time(), $this->sessionCfg());
 
-                return new IssuedTokens(
-                    accessToken: $accessToken,
-                    refreshToken: '',
-                    csrfToken: (string) $session['csrf_token'],
-                    sessionId: $sessionId,
-                    expiresIn: (int) $this->config->get('jwt.exp', 3600),
-                    user: $user,
-                );
+                    return $this->issueAccessOnlyFor($session, $user);
+                } catch (SessionExpiredException $e) {
+                    $this->refreshTokens->revokeAllForSession($sessionId);
+                    throw $e;
+                }
             }
         }
 
@@ -183,6 +179,34 @@ final class TokenService
         ], $ip);
 
         throw new RefreshTokenReuseException('Refresh token reuse detected; session revoked.');
+    }
+
+    /**
+     * Issue a fresh ACCESS token bound to the session's current active refresh
+     * token, minting NO new refresh token (refreshToken = null). Used by both the
+     * grace-window retry and the CAS-lost rotation path: the client keeps whatever
+     * refresh credential it already holds.
+     *
+     * @param array<string,mixed> $session
+     * @param array<string,mixed> $user
+     */
+    private function issueAccessOnlyFor(array $session, array $user): IssuedTokens
+    {
+        $accessToken = $this->issueAccessToken(
+            $user,
+            (string) $session['id'],
+            (string) $session['aal'],
+            $this->amrMethods($session),
+        );
+
+        return new IssuedTokens(
+            accessToken: $accessToken,
+            refreshToken: null,
+            csrfToken: (string) $session['csrf_token'],
+            sessionId: (string) $session['id'],
+            expiresIn: (int) $this->config->get('jwt.exp', 3600),
+            user: $user,
+        );
     }
 
     /**
@@ -198,7 +222,18 @@ final class TokenService
         $owns = $this->beginIfPossible();
 
         try {
-            $this->refreshTokens->revoke((int) $old['id']);
+            // Compare-and-swap: only the caller that flips active→revoked may issue
+            // a replacement. This closes the double-issue race — two concurrent
+            // rotations presenting the same token can't both mint a new refresh.
+            if (!$this->refreshTokens->revokeIfActive((int) $old['id'])) {
+                if ($owns) {
+                    $this->pdo->commit();
+                }
+                // We lost the race: another rotation already consumed this token.
+                // Do not issue a competing refresh token; hand back access only for
+                // the session's current active token. The winner's rotation stands.
+                return $this->issueAccessOnlyFor($session, $user);
+            }
 
             $rawRefresh = $this->tokenHash->random();
             $this->refreshTokens->issue(
