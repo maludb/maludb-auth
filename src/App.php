@@ -218,7 +218,10 @@ final class App
         $signup = new SignupController($this->auth, $this->tokens, $this->responder, $this->config);
         $token = new TokenController($this->auth, $this->tokens, $this->responder, $this->config);
         $logout = new LogoutController($this->sessions, $this->audit);
-        $user = new UserController($this->users, $this->sessions, $this->audit, $this->password, $this->csrf);
+        $user = new UserController(
+            $this->users, $this->sessions, $this->audit,
+            $this->password, $this->csrf, $this->otp, $this->config,
+        );
         $recover = new RecoverController($this->otp, $this->users);
         $otpCtrl = new OtpController($this->otp);
         $verify = new VerifyController($this->otp, $this->responder, $this->redirects, $this->config);

@@ -14,6 +14,8 @@ use Maludb\Auth\Repositories\SessionRepository;
 use Maludb\Auth\Repositories\UserRepository;
 use Maludb\Auth\Security\Csrf;
 use Maludb\Auth\Security\Password;
+use Maludb\Auth\Services\OtpService;
+use Maludb\Auth\Support\Config;
 
 /**
  * /auth/v1/user — the authenticated user's self-service endpoint.
@@ -31,6 +33,8 @@ final class UserController
         private AuditRepository $audit,
         private Password $password,
         private Csrf $csrf,
+        private OtpService $otp,
+        private Config $config,
     ) {}
 
     public function show(Request $request, RequestContext $context): Response
@@ -86,9 +90,21 @@ final class UserController
 
             $passwordChanged = false;
             if (array_key_exists('password', $input) && $input['password'] !== null && $input['password'] !== '') {
-                // TODO(Phase 2): require a valid reauthentication nonce here when
-                // UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION is enabled. For now the
-                // present valid session (+ CSRF for cookie mode) is the gate.
+                // When the deployment demands it, a password change must present
+                // a live reauthentication nonce (mailed by POST /reauthenticate)
+                // on top of the valid session (+ CSRF in cookie mode). The nonce
+                // is consumed on use — a second change needs a fresh one.
+                if ((bool) $this->config->get('security.update_password_require_reauthentication', false)) {
+                    $nonce = $input['nonce'] ?? null;
+                    if (!is_string($nonce)
+                        || $nonce === ''
+                        || !$this->otp->consumeReauthentication($auth->userId, $nonce)) {
+                        return Response::json([
+                            'error' => 'reauthentication_needed',
+                            'error_description' => 'Password change requires reauthentication.',
+                        ], 400);
+                    }
+                }
                 $attrs['encrypted_password'] = $this->password->hash((string) $input['password']);
                 $passwordChanged = true;
             }
