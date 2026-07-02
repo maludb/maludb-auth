@@ -41,4 +41,10 @@ return [
         'secure' => Env::bool('COOKIE_SECURE', false),
         'samesite' => Env::get('COOKIE_SAMESITE', 'Lax'),
     ],
+    'service_role' => [
+        // Shared secret that authorizes admin endpoints without a service-role
+        // JWT (e.g. server-to-server callers). Presented via the apikey or
+        // Authorization header. Keep this out of any client bundle.
+        'key' => Env::get('SERVICE_ROLE_KEY'),
+    ],
 ];

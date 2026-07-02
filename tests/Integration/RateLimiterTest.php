@@ -32,6 +32,31 @@ final class RateLimiterTest extends IntegrationTestCase
         $this->assertFalse($rl->attempt($b, 1, 0.0));
     }
 
+    public function test_tokens_floored_at_minus_one_prevents_lockout_dos(): void
+    {
+        $rl = new RateLimiter(self::$pdo);
+        $key = 'login:ip:203.0.113.200';
+
+        // Hammer the same key ~30 times (capacity 3, refill 1.0/sec). Without a
+        // floor, tokens would be driven far negative (e.g. ~-27), keeping a
+        // legitimate user blocked long past the intended window. With the floor
+        // the debt is capped at -1.
+        for ($i = 0; $i < 30; $i++) {
+            $rl->attempt($key, 3, 1.0);
+        }
+
+        // Simulate 2 seconds of quiet. With the floor, tokens sits at -1, so
+        // -1 + 2*1.0 = 1, clamped to capacity, minus 1 => allowed (TRUE).
+        // Without the floor, tokens would still be deeply negative => blocked.
+        self::$pdo->prepare(
+            "UPDATE auth.rate_limits
+             SET updated_at = now() - interval '2 seconds'
+             WHERE bucket_key = :k"
+        )->execute([':k' => $key]);
+
+        $this->assertTrue($rl->attempt($key, 3, 1.0));
+    }
+
     public function test_bucket_refills_over_time(): void
     {
         $rl = new RateLimiter(self::$pdo);

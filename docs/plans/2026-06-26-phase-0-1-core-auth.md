@@ -345,11 +345,12 @@ namespace Maludb\Auth\Http;
 
 final class Request
 {
+    public readonly string $method;
     private array $headersLower;
     private array $body;
 
     public function __construct(
-        public readonly string $method,
+        string $method,
         public readonly string $path,
         private array $query = [],
         array $headers = [],
@@ -357,6 +358,10 @@ final class Request
         private array $cookies = [],
         public readonly string $ip = '',
     ) {
+        // Normalize the HTTP method to canonical uppercase. Without this,
+        // isUnsafeMethod() (case-sensitive) would treat `post` as a SAFE method,
+        // and CsrfGuard/RateLimit would be bypassed by a lowercase-verb request.
+        $this->method = strtoupper(trim($method));
         $this->headersLower = [];
         foreach ($headers as $k => $v) {
             $this->headersLower[strtolower($k)] = $v;
@@ -1482,10 +1487,13 @@ final class RateLimiter
         INSERT INTO auth.rate_limits (bucket_key, tokens, updated_at)
         VALUES (:k, :cap - 1, now())
         ON CONFLICT (bucket_key) DO UPDATE SET
-            tokens = LEAST(:cap,
+            -- GREATEST(-1, ...) floors the bucket so sustained hammering can't
+            -- drive tokens arbitrarily negative and lock out a legitimate user
+            -- long past the intended capacity/refill window (amplified DoS).
+            tokens = GREATEST(-1, LEAST(:cap,
                 auth.rate_limits.tokens
                 + EXTRACT(EPOCH FROM (now() - auth.rate_limits.updated_at)) * :refill
-            ) - 1,
+            ) - 1),
             updated_at = now()
         RETURNING tokens
         SQL;
@@ -1495,6 +1503,7 @@ final class RateLimiter
     }
 }
 ```
+> Contract: `attempt()` writes to the DB and THROWS on DB error — callers MUST fail **closed** (deny the attempt) on exception, never fail open. The reused named placeholders assume PDO pgsql with `ATTR_EMULATE_PREPARES=false`; a MySQL/other-driver port must use distinct placeholder names.
 
 **Step 4:** Run → PASS. Commit.
 
@@ -1675,7 +1684,7 @@ Create exceptions `InvalidRefreshTokenException`, `RefreshTokenReuseException` u
 **Step 3: Implement** `AuthService`:
 - ctor: `UserRepository`, `TokenService`, `Password`, `AuditRepository`, `Config`.
 - `signup`: check `signup.disabled`; normalize email; `Password::hash`; `UserRepository::create` with `raw_app_meta_data = {provider:'email', providers:['email']}`; create `email` identity; if autoconfirm → `markEmailConfirmed`; audit `signup`. (Email-confirmation sending is Phase 2; until then autoconfirm is on.)
-- `login`: normalize; `findByEmail`; `$ok = $password->verify($pw, $user['encrypted_password'] ?? $dummy) && $user && !banned`; if `$user` and `needsRehash` → update hash; on failure throw `InvalidCredentialsException`; on success `issueForUser(user, ip, ua, 'aal1', ['password'])`, `setLastSignInAt`, audit `login`.
+- `login`: normalize; `findByEmail`. **Run bcrypt verify UNCONDITIONALLY and FIRST** (do not short-circuit it away when the user is missing, or you reintroduce a timing oracle): `$hash = ($user['encrypted_password'] ?? null) ?: $password->dummyHash(); $ok = $password->verify($pw, $hash);`. Then require `$user !== null && $ok`; on failure throw `InvalidCredentialsException` (generic). **Only after** the password check, test the ban (`banned_until` in the future → `UserBannedException`) so a wrong password on a banned account still looks generic. If `$user` and `needsRehash` → update hash. On success `issueForUser(user, ip, ua, 'aal1', ['password'])`, `setLastSignInAt`, audit `login`. Wrap `signup`'s user+identity+confirm writes in a transaction (nested-safe via `inTransaction()`, like `TokenService`) so a failed identity insert can't orphan a user.
 
 **Step 4:** Run → PASS. Commit.
 

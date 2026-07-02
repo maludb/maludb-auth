@@ -3,7 +3,7 @@ declare(strict_types=1);
 
 namespace Maludb\Auth\Security;
 
-final class Password
+class Password
 {
     public function __construct(private int $minLength = 12) {}
 

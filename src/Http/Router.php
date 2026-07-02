@@ -11,10 +11,15 @@ final class Router
     /** @var MiddlewareInterface[] */
     private array $middleware = [];
 
-    public function add(string $method, string $path, callable $handler): void
+    /**
+     * @param MiddlewareInterface[] $routeMiddleware Per-route middleware run,
+     *        onion-style, AFTER the global chain and BEFORE the handler. Applies
+     *        to this route only (e.g. RequireAdmin on /admin/* routes).
+     */
+    public function add(string $method, string $path, callable $handler, array $routeMiddleware = []): void
     {
         $pattern = '#^' . preg_replace('#\{(\w+)\}#', '(?P<$1>[^/]+)', $path) . '$#';
-        $this->routes[] = compact('method', 'pattern', 'handler');
+        $this->routes[] = compact('method', 'pattern', 'handler', 'routeMiddleware');
     }
 
     public function middleware(MiddlewareInterface $m): void { $this->middleware[] = $m; }
@@ -29,7 +34,19 @@ final class Router
                         'rawurldecode',
                         array_filter($m, 'is_string', ARRAY_FILTER_USE_KEY)
                     );
-                    return ($route['handler'])($req, $params);
+                    $handler = fn(Request $r): Response => ($route['handler'])($r, $params);
+
+                    // Wrap the matched handler in its own route-level middleware
+                    // onion (outermost first), so per-route guards run only for
+                    // this route, after the global chain has already resolved.
+                    $handler = array_reduce(
+                        array_reverse($route['routeMiddleware']),
+                        fn(callable $next, MiddlewareInterface $mw) =>
+                            fn(Request $r) => $mw->handle($r, $next),
+                        $handler
+                    );
+
+                    return $handler($req);
                 }
             }
             return Response::error('not_found', 'No route matched.', 404);

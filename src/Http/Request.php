@@ -8,8 +8,10 @@ final class Request
     private array $headersLower;
     private array $body;
 
+    public readonly string $method;
+
     public function __construct(
-        public readonly string $method,
+        string $method,
         public readonly string $path,
         private array $query = [],
         array $headers = [],
@@ -17,6 +19,11 @@ final class Request
         private array $cookies = [],
         public readonly string $ip = '',
     ) {
+        // Canonicalize the HTTP method at the edge so downstream comparisons are
+        // safe. Stored verbatim, a lowercase `post` would slip past
+        // isUnsafeMethod() (case-sensitive against uppercase literals) and
+        // bypass CSRF / rate-limit categorization. Idempotent for uppercase input.
+        $this->method = strtoupper(trim($method));
         $this->headersLower = [];
         foreach ($headers as $k => $v) {
             $this->headersLower[strtolower($k)] = $v;
@@ -62,6 +69,11 @@ final class Request
     public function cookie(string $k, ?string $default = null): ?string
     { return $this->cookies[$k] ?? $default; }
 
+    /**
+     * Reads the bearer token from the real Authorization header ONLY. It must
+     * never fall back to a query param or body field named access_token, or an
+     * attacker could self-promote to bearer precedence (which skips CSRF).
+     */
     public function bearerToken(): ?string
     {
         $h = $this->header('authorization', '');
