@@ -14,4 +14,12 @@ final class TokenHash
     {
         return hash('sha256', $token); // store this; compare incoming by re-hashing
     }
+
+    /** Crypto-random numeric OTP, zero-padded to exactly $digits characters. */
+    public function otp(int $digits = 6): string
+    {
+        $max = (10 ** $digits) - 1;
+
+        return str_pad((string) random_int(0, $max), $digits, '0', STR_PAD_LEFT);
+    }
 }
