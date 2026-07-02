@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 namespace Maludb\Auth;
 
+use Maludb\Auth\Controllers\AdminActionsController;
 use Maludb\Auth\Controllers\AdminUsersController;
 use Maludb\Auth\Controllers\LogoutController;
 use Maludb\Auth\Controllers\MetaController;
@@ -61,6 +62,7 @@ final class App
         private MetaController $meta,
         private OtpService $otp,
         private RedirectValidator $redirects,
+        private MailComposer $composer,
     ) {}
 
     public static function boot(): self
@@ -110,11 +112,10 @@ final class App
             'null' => new NullMailer(),
             default => new LogMailer(),
         };
+        $composer = new MailComposer((string) $config->get('app.url'), $config->get('site.url'));
         $otp = new OtpService(
             $users, $identities, new OneTimeTokenRepository($pdo), $tokens, $audit,
-            $mailer,
-            new MailComposer((string) $config->get('app.url'), $config->get('site.url')),
-            $tokenHash, $config, $pdo,
+            $mailer, $composer, $tokenHash, $config, $pdo,
         );
         $redirects = new RedirectValidator(
             $config->get('site.url'),
@@ -141,7 +142,7 @@ final class App
             $config, $database, $pdo, $base,
             new SecurityHeaders(), $cors, $rateLimit,
             $jwt, $csrf, $sessions, $users, $audit, $password,
-            $auth, $tokens, $responder, $meta, $otp, $redirects,
+            $auth, $tokens, $responder, $meta, $otp, $redirects, $composer,
         );
     }
 
@@ -226,6 +227,7 @@ final class App
         $otpCtrl = new OtpController($this->otp);
         $verify = new VerifyController($this->otp, $this->responder, $this->redirects, $this->config);
         $admin = new AdminUsersController($this->users, $this->audit, $this->password);
+        $adminActions = new AdminActionsController($this->users, $this->otp, $this->composer, $this->audit);
 
         // --- Public / meta ------------------------------------------------
         $router->add('GET', $b . '/health', $this->meta->health(...));
@@ -255,6 +257,10 @@ final class App
         $router->add('GET', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->show($r, $p), $requireAdmin);
         $router->add('PUT', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->update($r, $p), $requireAdmin);
         $router->add('DELETE', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->delete($r, $p), $requireAdmin);
+
+        $router->add('POST', $b . '/admin/invite', fn(Request $r) => $adminActions->invite($r), $requireAdmin);
+        $router->add('POST', $b . '/admin/generate_link', fn(Request $r) => $adminActions->generateLink($r), $requireAdmin);
+        $router->add('GET', $b . '/admin/audit', fn(Request $r) => $adminActions->auditLog($r), $requireAdmin);
 
         return $router;
     }

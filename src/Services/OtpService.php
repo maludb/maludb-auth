@@ -220,14 +220,22 @@ final class OtpService
         return $created === false || ($created + $ttl) < time();
     }
 
-    /** @return array<string,mixed> */
-    private function createPasswordlessUser(string $normalizedEmail): array
+    /**
+     * Create a passwordless user + email identity (used by OTP signups and
+     * admin invites). Metadata is caller-supplied user metadata only —
+     * app_metadata stays server-controlled.
+     *
+     * @param array<string,mixed> $userMeta
+     * @return array<string,mixed>
+     */
+    public function createPasswordlessUser(string $normalizedEmail, array $userMeta = []): array
     {
         $owns = $this->beginIfPossible();
         try {
             $user = $this->users->create([
                 'email' => $normalizedEmail,
                 'raw_app_meta_data' => ['provider' => 'email', 'providers' => ['email']],
+                'raw_user_meta_data' => $userMeta,
             ]);
             $this->identities->create([
                 'user_id' => $user['id'],
