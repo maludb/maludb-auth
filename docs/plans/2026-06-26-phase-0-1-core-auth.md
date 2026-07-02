@@ -1482,10 +1482,13 @@ final class RateLimiter
         INSERT INTO auth.rate_limits (bucket_key, tokens, updated_at)
         VALUES (:k, :cap - 1, now())
         ON CONFLICT (bucket_key) DO UPDATE SET
-            tokens = LEAST(:cap,
+            -- GREATEST(-1, ...) floors the bucket so sustained hammering can't
+            -- drive tokens arbitrarily negative and lock out a legitimate user
+            -- long past the intended capacity/refill window (amplified DoS).
+            tokens = GREATEST(-1, LEAST(:cap,
                 auth.rate_limits.tokens
                 + EXTRACT(EPOCH FROM (now() - auth.rate_limits.updated_at)) * :refill
-            ) - 1,
+            ) - 1),
             updated_at = now()
         RETURNING tokens
         SQL;
@@ -1495,6 +1498,7 @@ final class RateLimiter
     }
 }
 ```
+> Contract: `attempt()` writes to the DB and THROWS on DB error — callers MUST fail **closed** (deny the attempt) on exception, never fail open. The reused named placeholders assume PDO pgsql with `ATTR_EMULATE_PREPARES=false`; a MySQL/other-driver port must use distinct placeholder names.
 
 **Step 4:** Run → PASS. Commit.
 
