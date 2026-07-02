@@ -99,6 +99,40 @@ final class RateLimitMiddlewareTest extends IntegrationTestCase
         }
     }
 
+    public function test_reauthenticate_is_throttled(): void
+    {
+        $mw = new RateLimit(new RateLimiter(self::$pdo), ['reauth' => ['capacity' => 2, 'refillPerSecond' => 0.0001]]);
+        $req = new Request(method: 'POST', path: '/auth/v1/reauthenticate', ip: '198.51.100.60');
+
+        $this->assertSame(200, $mw->handle($req, $this->next())->status);
+        $this->assertSame(200, $mw->handle($req, $this->next())->status);
+        $this->assertSame(429, $mw->handle($req, $this->next())->status);
+    }
+
+    public function test_put_user_with_password_is_throttled_but_metadata_is_not(): void
+    {
+        $limits = ['password_update' => ['capacity' => 2, 'refillPerSecond' => 0.0001]];
+        $mw = new RateLimit(new RateLimiter(self::$pdo), $limits);
+        $ip = '198.51.100.61';
+
+        $pwReq = fn() => new Request(
+            method: 'PUT', path: '/auth/v1/user',
+            rawBody: json_encode(['password' => 'x', 'nonce' => '000000']), ip: $ip,
+        );
+        $this->assertSame(200, $mw->handle($pwReq(), $this->next())->status);
+        $this->assertSame(200, $mw->handle($pwReq(), $this->next())->status);
+        $this->assertSame(429, $mw->handle($pwReq(), $this->next())->status);
+
+        // A metadata-only PUT /user is uncategorized -> never throttled.
+        $metaReq = new Request(
+            method: 'PUT', path: '/auth/v1/user',
+            rawBody: json_encode(['phone' => '123']), ip: $ip,
+        );
+        for ($i = 0; $i < 5; $i++) {
+            $this->assertSame(200, $mw->handle($metaReq, $this->next())->status);
+        }
+    }
+
     public function test_fails_closed_when_limiter_throws(): void
     {
         $throwing = new class implements RateLimiterInterface {

@@ -42,6 +42,7 @@ final class CoreSchemaTest extends IntegrationTestCase
             'refresh_tokens',
             'audit_log_entries',
             'rate_limits',
+            'one_time_tokens',
         ] as $expected) {
             $this->assertContains($expected, $tables, "Expected auth.$expected to exist");
         }
@@ -53,6 +54,24 @@ final class CoreSchemaTest extends IntegrationTestCase
         $this->assertTrue($this->columnExists('sessions', 'csrf_token'));
         $this->assertTrue($this->columnExists('refresh_tokens', 'parent'));
         $this->assertTrue($this->columnExists('refresh_tokens', 'revoked'));
+        $this->assertTrue($this->columnExists('one_time_tokens', 'token_hash'));
+        $this->assertTrue($this->columnExists('one_time_tokens', 'relates_to'));
+    }
+
+    public function test_one_time_tokens_single_live_per_user_and_type(): void
+    {
+        $userId = self::$pdo->query(
+            "INSERT INTO auth.users (email) VALUES ('ott-schema@example.com') RETURNING id"
+        )->fetchColumn();
+
+        $insert = self::$pdo->prepare(
+            "INSERT INTO auth.one_time_tokens (user_id, token_type, token_hash)
+             VALUES (:u, 'recovery', :h)"
+        );
+        $insert->execute([':u' => $userId, ':h' => str_repeat('a', 64)]);
+
+        $this->expectException(\PDOException::class);
+        $insert->execute([':u' => $userId, ':h' => str_repeat('b', 64)]);
     }
 
     public function test_users_confirmed_at_is_generated(): void

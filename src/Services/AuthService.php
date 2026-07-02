@@ -4,6 +4,7 @@ declare(strict_types=1);
 namespace Maludb\Auth\Services;
 
 use Maludb\Auth\Dto\IssuedTokens;
+use Maludb\Auth\Exceptions\EmailNotConfirmedException;
 use Maludb\Auth\Exceptions\InvalidCredentialsException;
 use Maludb\Auth\Exceptions\SignupDisabledException;
 use Maludb\Auth\Exceptions\UserBannedException;
@@ -163,8 +164,16 @@ final class AuthService
             throw new InvalidCredentialsException('Invalid email or password.');
         }
 
-        if ($this->isBanned($user)) {
+        if (\Maludb\Auth\Support\BanCheck::isBanned($user)) {
             throw new UserBannedException('This account is banned.');
+        }
+
+        // Confirmation gate (only when confirmations are actually required).
+        // Checked AFTER the credential + ban checks so a wrong password on an
+        // unconfirmed account stays a generic invalid_grant.
+        if ((bool) $this->config->get('signup.autoconfirm', true) === false
+            && ($user['email_confirmed_at'] ?? null) === null) {
+            throw new EmailNotConfirmedException('Email not confirmed.');
         }
 
         // Opportunistic rehash if the stored hash's parameters are out of date.
@@ -180,18 +189,5 @@ final class AuthService
         $this->audit->record('login', ['user_id' => $user['id']], $ip);
 
         return $issued;
-    }
-
-    /** @param array<string,mixed> $user */
-    private function isBanned(array $user): bool
-    {
-        $bannedUntil = $user['banned_until'] ?? null;
-        if ($bannedUntil === null || $bannedUntil === '') {
-            return false;
-        }
-
-        $ts = strtotime((string) $bannedUntil);
-
-        return $ts !== false && $ts > time();
     }
 }

@@ -6,8 +6,11 @@ namespace Maludb\Auth\Tests\Integration;
 use Maludb\Auth\Http\AuthenticatedUser;
 use Maludb\Auth\Http\RequestContext;
 use Maludb\Auth\Http\TokenResponder;
+use Maludb\Auth\Mail\ArrayMailer;
+use Maludb\Auth\Mail\MailComposer;
 use Maludb\Auth\Repositories\AuditRepository;
 use Maludb\Auth\Repositories\IdentityRepository;
+use Maludb\Auth\Repositories\OneTimeTokenRepository;
 use Maludb\Auth\Repositories\RefreshTokenRepository;
 use Maludb\Auth\Repositories\SessionRepository;
 use Maludb\Auth\Repositories\UserRepository;
@@ -16,6 +19,7 @@ use Maludb\Auth\Security\Jwt;
 use Maludb\Auth\Security\Password;
 use Maludb\Auth\Security\TokenHash;
 use Maludb\Auth\Services\AuthService;
+use Maludb\Auth\Services\OtpService;
 use Maludb\Auth\Services\SessionService;
 use Maludb\Auth\Services\TokenService;
 use Maludb\Auth\Support\Config;
@@ -32,6 +36,9 @@ abstract class ControllerTestCase extends IntegrationTestCase
     private static ?string $pub = null;
 
     protected const PASSWORD = 'correct horse battery staple';
+
+    /** Outbox of the most recent otpService() instance. */
+    protected ArrayMailer $mailer;
 
     /** @return array{0:string,1:string} */
     protected function keys(): array
@@ -64,6 +71,12 @@ abstract class ControllerTestCase extends IntegrationTestCase
             'signup' => ['disabled' => false, 'autoconfirm' => true],
             'cookie' => ['secure' => false, 'samesite' => 'Lax'],
             'service_role' => ['key' => 'test-service-role-key'],
+            'otp' => ['ttl' => 3600],
+            'app' => ['url' => 'http://localhost:8080'],
+            'site' => [
+                'url' => 'http://localhost:3000',
+                'uri_allow_list' => ['http://localhost:3000/*'],
+            ],
         ], $overrides));
     }
 
@@ -114,6 +127,58 @@ abstract class ControllerTestCase extends IntegrationTestCase
     protected function responder(): TokenResponder
     {
         return new TokenResponder();
+    }
+
+    /**
+     * OtpService over the shared test PDO. Captured mail lands in
+     * $this->mailer->sent; the mailer is (re)created here so each service
+     * instance starts with an empty outbox.
+     */
+    protected function otpService(Config $config): OtpService
+    {
+        $this->mailer = new ArrayMailer();
+
+        return new OtpService(
+            $this->users(),
+            new IdentityRepository(self::$pdo),
+            new OneTimeTokenRepository(self::$pdo),
+            $this->tokenService($config),
+            $this->audit(),
+            $this->mailer,
+            new MailComposer(
+                (string) $config->get('app.url', 'http://localhost:8080'),
+                $config->get('site.url', 'http://localhost:3000'),
+            ),
+            new TokenHash(),
+            $config,
+            self::$pdo,
+        );
+    }
+
+    /** Pull the 6-digit code out of the last captured mail. */
+    protected function mailedCode(): string
+    {
+        $last = $this->mailer->last();
+        $this->assertNotNull($last, 'Expected a captured mail.');
+        preg_match('/code: ([0-9]{6})/', $last['text'], $m);
+        $this->assertNotEmpty($m, 'Expected a 6-digit code in the mail body.');
+
+        return $m[1];
+    }
+
+    /**
+     * Pull the (user-salted) token_hash out of the verify link in the last
+     * captured mail — mirrors what a user clicking the link actually sends,
+     * and avoids recomputing the hash (which the salt makes non-trivial).
+     */
+    protected function mailedTokenHash(): string
+    {
+        $last = $this->mailer->last();
+        $this->assertNotNull($last, 'Expected a captured mail.');
+        preg_match('/token_hash=([0-9a-f]{64})/', $last['text'], $m);
+        $this->assertNotEmpty($m, 'Expected a token_hash link in the mail body.');
+
+        return $m[1];
     }
 
     /**

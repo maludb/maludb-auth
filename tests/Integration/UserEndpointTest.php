@@ -20,6 +20,8 @@ final class UserEndpointTest extends ControllerTestCase
             $this->audit(),
             new Password((int) $config->get('password.min_length', 12)),
             new Csrf(),
+            $this->otpService($config),
+            $config,
         );
     }
 
@@ -126,5 +128,102 @@ final class UserEndpointTest extends ControllerTestCase
         $config = $this->testConfig();
         $res = $this->controller($config)->update($this->request('PUT', ['phone' => '123']), new RequestContext());
         $this->assertSame(401, $res->status);
+    }
+
+    // --- reauth-gated password change (Phase 2) ---------------------------
+
+    private function reauthConfig(): Config
+    {
+        return $this->testConfig([
+            'security' => ['update_password_require_reauthentication' => true],
+        ]);
+    }
+
+    public function test_password_change_without_nonce_is_rejected_when_gate_on(): void
+    {
+        $config = $this->reauthConfig();
+        $controller = $this->controller($config);
+        $issued = $this->loginUser($config, 'gate-on@example.com');
+        $ctx = $this->contextFor($issued->accessToken);
+
+        $res = $controller->update(
+            $this->request('PUT', ['password' => 'a-brand-new-strong-password']),
+            $ctx,
+        );
+
+        $this->assertSame(400, $res->status);
+        $this->assertSame('reauthentication_needed', json_decode($res->body, true)['error']);
+        // Old password still verifies — nothing changed.
+        $persisted = $this->users()->findById($ctx->user->userId);
+        $this->assertTrue((new Password(12))->verify(self::PASSWORD, $persisted['encrypted_password']));
+    }
+
+    public function test_password_change_with_valid_nonce_succeeds_and_nonce_is_consumed(): void
+    {
+        $config = $this->reauthConfig();
+        $controller = $this->controller($config);
+        $otp = $this->otpService($config); // fresh outbox for the nonce mail
+        $issued = $this->loginUser($config, 'gate-nonce@example.com');
+        $ctx = $this->contextFor($issued->accessToken);
+
+        $otp->send('reauthentication', 'gate-nonce@example.com', 'ip');
+        $nonce = $this->mailedCode();
+
+        $ok = $controller->update(
+            $this->request('PUT', ['password' => 'a-brand-new-strong-password', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(200, $ok->status);
+        $persisted = $this->users()->findById($ctx->user->userId);
+        $this->assertTrue((new Password(12))->verify('a-brand-new-strong-password', $persisted['encrypted_password']));
+
+        // Consumed: the same nonce cannot authorize a second change.
+        $replay = $controller->update(
+            $this->request('PUT', ['password' => 'yet-another-strong-password', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(400, $replay->status);
+        $this->assertSame('reauthentication_needed', json_decode($replay->body, true)['error']);
+    }
+
+    public function test_weak_password_does_not_burn_the_nonce(): void
+    {
+        $config = $this->reauthConfig();
+        $controller = $this->controller($config);
+        $otp = $this->otpService($config);
+        $issued = $this->loginUser($config, 'weak-keeps-nonce@example.com');
+        $ctx = $this->contextFor($issued->accessToken);
+
+        $otp->send('reauthentication', 'weak-keeps-nonce@example.com', 'ip');
+        $nonce = $this->mailedCode();
+
+        // First attempt uses a too-short password -> 400 weak_password.
+        $weak = $controller->update(
+            $this->request('PUT', ['password' => 'short', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(400, $weak->status);
+        $this->assertSame('weak_password', json_decode($weak->body, true)['error']);
+
+        // The nonce must still be usable for a proper retry.
+        $ok = $controller->update(
+            $this->request('PUT', ['password' => 'a-brand-new-strong-password', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(200, $ok->status);
+    }
+
+    public function test_password_change_without_nonce_still_works_when_gate_off(): void
+    {
+        $config = $this->testConfig(); // gate defaults off
+        $controller = $this->controller($config);
+        $issued = $this->loginUser($config, 'gate-off@example.com');
+        $ctx = $this->contextFor($issued->accessToken);
+
+        $res = $controller->update(
+            $this->request('PUT', ['password' => 'a-brand-new-strong-password']),
+            $ctx,
+        );
+        $this->assertSame(200, $res->status);
     }
 }

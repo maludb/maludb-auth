@@ -41,6 +41,21 @@ return [
         'secure' => Env::bool('COOKIE_SECURE', false),
         'samesite' => Env::get('COOKIE_SAMESITE', 'Lax'),
     ],
+    'otp' => [
+        // Lifetime of every one-time token (confirmation, recovery, magiclink,
+        // invite, reauthentication), enforced at redeem time.
+        'ttl' => Env::int('OTP_TTL', 3600),
+    ],
+    'mailer' => [
+        // 'log' (error_log, DEV ONLY — bodies hold live codes) or 'null' (drop).
+        // Real SMTP delivery is a deployment concern; drop in a MailerInterface.
+        'driver' => Env::get('MAILER_DRIVER', 'log'),
+        'from' => Env::get('MAILER_FROM', 'auth@localhost'),
+    ],
+    'security' => [
+        'update_password_require_reauthentication' =>
+            Env::bool('UPDATE_PASSWORD_REQUIRE_REAUTHENTICATION', false),
+    ],
     'service_role' => [
         // Shared secret that authorizes admin endpoints without a service-role
         // JWT (e.g. server-to-server callers). Presented via the apikey or

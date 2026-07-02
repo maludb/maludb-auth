@@ -24,6 +24,16 @@ final class ErrorMapperTest extends TestCase
         $this->assertSame('validation_failed', $body['error']);
     }
 
+    public function test_invalid_otp_maps_to_generic_401_otp_expired(): void
+    {
+        $res = ErrorMapper::map(new \Maludb\Auth\Exceptions\InvalidOtpException('internal detail'));
+        $this->assertSame(401, $res->status);
+        $body = json_decode($res->body, true);
+        $this->assertSame('otp_expired', $body['error']);
+        // The internal message must never surface.
+        $this->assertStringNotContainsString('internal detail', $res->body);
+    }
+
     public function test_credential_and_refresh_errors_collapse_to_generic_invalid_grant(): void
     {
         foreach ([

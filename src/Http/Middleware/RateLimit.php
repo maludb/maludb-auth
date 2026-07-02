@@ -72,11 +72,16 @@ final class RateLimit implements MiddlewareInterface
 
     private function categorize(Request $request): ?string
     {
-        if (!$request->isUnsafeMethod()) {
-            return null;
-        }
-
         $path = $request->path;
+
+        if (!$request->isUnsafeMethod()) {
+            // GET /verify redeems emailed tokens (link clicks), so it must be
+            // throttled even though the method is "safe" — a 6-digit code space
+            // is brute-forceable through any unthrottled redemption path.
+            return ($request->method === 'GET' && $this->pathEndsWith($path, '/verify'))
+                ? 'verify'
+                : null;
+        }
 
         if ($this->pathEndsWith($path, '/token')) {
             // Query is canonical per the design; the JSON body is a defensive
@@ -94,11 +99,22 @@ final class RateLimit implements MiddlewareInterface
             };
         }
 
+        // PUT /user carrying a password is the ONLY way to submit a reauth
+        // nonce guess; throttle those attempts (metadata-only updates are not
+        // rate-limited so ordinary profile edits stay unthrottled).
+        if ($request->method === 'PUT' && $this->pathEndsWith($path, '/user')) {
+            $pw = $request->input('password');
+            return (is_string($pw) && $pw !== '') ? 'password_update' : null;
+        }
+
         return match (true) {
-            $this->pathEndsWith($path, '/signup')  => 'signup',
-            $this->pathEndsWith($path, '/recover') => 'recover',
-            $this->pathEndsWith($path, '/verify')  => 'verify',
-            $this->pathEndsWith($path, '/otp')     => 'otp',
+            $this->pathEndsWith($path, '/signup')        => 'signup',
+            $this->pathEndsWith($path, '/recover')       => 'recover',
+            $this->pathEndsWith($path, '/reauthenticate') => 'reauth',
+            $this->pathEndsWith($path, '/verify')        => 'verify',
+            $this->pathEndsWith($path, '/otp'),
+            $this->pathEndsWith($path, '/magiclink')     => 'otp',
+            $this->pathEndsWith($path, '/resend')        => 'resend',
             default => null,
         };
     }

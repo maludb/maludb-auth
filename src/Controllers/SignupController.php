@@ -12,6 +12,7 @@ use Maludb\Auth\Http\TokenResponder;
 use Maludb\Auth\Http\UserPresenter;
 use Maludb\Auth\Http\Validator;
 use Maludb\Auth\Services\AuthService;
+use Maludb\Auth\Services\OtpService;
 use Maludb\Auth\Services\TokenService;
 use Maludb\Auth\Support\Config;
 
@@ -23,6 +24,12 @@ use Maludb\Auth\Support\Config;
  * a caller cannot probe which emails have accounts. When autoconfirm is on the
  * success response also issues a live session (like login); otherwise it returns
  * only the public user (client must confirm email — Phase 2).
+ *
+ * As with /recover, the defense is at the response level, not timing: a genuine
+ * signup performs an insert + confirmation mail while the duplicate path returns
+ * the fabricated user immediately, so a latency oracle is theoretically possible.
+ * The ~10/hr signup rate limit is the accepted bound; constant-work hardening is
+ * deferred with the mailer work.
  */
 final class SignupController
 {
@@ -31,6 +38,7 @@ final class SignupController
         private TokenService $tokens,
         private TokenResponder $responder,
         private Config $config,
+        private OtpService $otp,
     ) {}
 
     public function handle(Request $request, RequestContext $context): Response
@@ -70,6 +78,17 @@ final class SignupController
                     (array) $this->config->get('cookie', []),
                 );
             }
+
+            // Confirmation required: mint + mail the confirmation token. The
+            // response stays the bare user — no session until /verify.
+            $redirectTo = $input['redirect_to'] ?? '';
+            $this->otp->send(
+                'confirmation',
+                $email,
+                $request->ip,
+                createUser: false,
+                redirectTo: is_string($redirectTo) ? $redirectTo : '',
+            );
 
             return Response::json(['user' => UserPresenter::toPublic($user)], 200);
         } catch (\Throwable $e) {

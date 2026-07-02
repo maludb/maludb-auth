@@ -31,6 +31,7 @@ final class NoEncryptedPasswordLeakTest extends ControllerTestCase
             $this->tokenService($config),
             $this->responder(),
             $config,
+            $this->otpService($config),
         );
         $bodies[] = $signup->handle(
             new Request(method: 'POST', path: '/signup', headers: ['User-Agent' => 'p'],
@@ -59,7 +60,7 @@ final class NoEncryptedPasswordLeakTest extends ControllerTestCase
         // GET /user.
         $userCtl = new UserController(
             $this->users(), $this->sessions(), $this->audit(),
-            new Password(12), new Csrf(),
+            new Password(12), new Csrf(), $this->otpService($config), $config,
         );
         $bodies[] = $userCtl->show(new Request(method: 'GET', path: '/user', ip: '1.1.1.1'), $ctx);
 

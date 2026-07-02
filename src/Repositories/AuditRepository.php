@@ -41,10 +41,23 @@ final class AuditRepository
      */
     public function recent(int $limit): array
     {
+        return $this->page(1, $limit);
+    }
+
+    /**
+     * @return array<int,array<string,mixed>> Newest first, offset-paginated.
+     */
+    public function page(int $page, int $perPage): array
+    {
+        $perPage = max(1, min(1000, $perPage));
+        $offset = (max(1, $page) - 1) * $perPage;
+
         $stmt = $this->pdo->prepare(
-            'SELECT * FROM auth.audit_log_entries ORDER BY created_at DESC LIMIT :limit'
+            'SELECT * FROM auth.audit_log_entries
+             ORDER BY created_at DESC LIMIT :limit OFFSET :offset'
         );
-        $stmt->bindValue(':limit', max(1, $limit), PDO::PARAM_INT);
+        $stmt->bindValue(':limit', $perPage, PDO::PARAM_INT);
+        $stmt->bindValue(':offset', $offset, PDO::PARAM_INT);
         $stmt->execute();
 
         return array_map(

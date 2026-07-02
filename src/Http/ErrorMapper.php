@@ -4,7 +4,9 @@ declare(strict_types=1);
 namespace Maludb\Auth\Http;
 
 use Maludb\Auth\Exceptions\DuplicateEmailException;
+use Maludb\Auth\Exceptions\EmailNotConfirmedException;
 use Maludb\Auth\Exceptions\InvalidCredentialsException;
+use Maludb\Auth\Exceptions\InvalidOtpException;
 use Maludb\Auth\Exceptions\InvalidRefreshTokenException;
 use Maludb\Auth\Exceptions\RefreshTokenReuseException;
 use Maludb\Auth\Exceptions\SessionExpiredException;
@@ -43,6 +45,21 @@ final class ErrorMapper
                 'error' => 'invalid_grant',
                 'error_description' => 'Invalid login credentials',
             ], 400),
+
+            // Only thrown after the credential check passed, so this cannot be
+            // used to probe passwords — it only tells a correct caller to go
+            // confirm their inbox.
+            $e instanceof EmailNotConfirmedException => Response::json([
+                'error' => 'email_not_confirmed',
+                'error_description' => 'Email not confirmed',
+            ], 400),
+
+            // One generic body for every OTP redemption failure — invalid,
+            // expired, consumed, and wrong-type are indistinguishable outside.
+            $e instanceof InvalidOtpException => Response::json([
+                'error' => 'otp_expired',
+                'error_description' => 'Email link is invalid or has expired',
+            ], 401),
 
             $e instanceof UserBannedException => Response::json([
                 'error' => 'user_banned',

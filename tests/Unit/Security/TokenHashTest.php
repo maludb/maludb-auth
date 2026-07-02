@@ -30,6 +30,27 @@ final class TokenHashTest extends TestCase
         $this->assertGreaterThan(strlen($th->random(32)), strlen($th->random(64)));
     }
 
+    public function test_otp_is_exactly_n_zero_padded_digits(): void
+    {
+        $th = new TokenHash();
+        for ($i = 0; $i < 200; $i++) {
+            $this->assertMatchesRegularExpression('/^[0-9]{6}$/', $th->otp());
+        }
+        $this->assertMatchesRegularExpression('/^[0-9]{8}$/', $th->otp(8));
+    }
+
+    public function test_otp_varies(): void
+    {
+        $th = new TokenHash();
+        $seen = [];
+        for ($i = 0; $i < 50; $i++) {
+            $seen[$th->otp()] = true;
+        }
+        // 50 draws from a million-value space colliding down to 1 value is
+        // impossible unless otp() is constant.
+        $this->assertGreaterThan(1, count($seen));
+    }
+
     public function test_hash_is_deterministic_sha256_hex(): void
     {
         $th = new TokenHash();

@@ -33,6 +33,7 @@ final class MetaController
             'disable_signup' => (bool) $this->config->get('signup.disabled', false),
             'mailer_autoconfirm' => (bool) $this->config->get('signup.autoconfirm', true),
             'external_email_enabled' => true,
+            'mailer_otp_exp' => (int) $this->config->get('otp.ttl', 3600),
         ]);
     }
 

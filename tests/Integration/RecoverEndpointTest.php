@@ -10,9 +10,13 @@ use Maludb\Auth\Support\Config;
 
 final class RecoverEndpointTest extends ControllerTestCase
 {
-    private function controller(): RecoverController
+    private function controller(?Config $config = null): RecoverController
     {
-        return new RecoverController($this->audit());
+        return new RecoverController(
+            $this->otpService($config ?? $this->testConfig()),
+            $this->users(),
+            $this->audit(),
+        );
     }
 
     private function request(array $body): Request
@@ -25,24 +29,42 @@ final class RecoverEndpointTest extends ControllerTestCase
         );
     }
 
-    public function test_recover_existing_email_returns_generic_200(): void
+    public function test_recover_existing_email_returns_generic_200_and_mails_a_code(): void
     {
         $config = $this->testConfig();
         $this->authService($config)->signup('exists@example.com', self::PASSWORD, '203.0.113.5');
 
-        $res = $this->controller()->recover($this->request(['email' => 'exists@example.com']), new RequestContext());
+        $res = $this->controller($config)->recover($this->request(['email' => 'exists@example.com']), new RequestContext());
 
         $this->assertSame(200, $res->status);
         $this->assertArrayNotHasKey('error', (array) json_decode($res->body, true));
+        $this->assertCount(1, $this->mailer->sent);
+        $this->assertSame('exists@example.com', $this->mailer->last()['to']);
+        $this->mailedCode(); // asserts a 6-digit code is present
     }
 
-    public function test_recover_nonexistent_email_returns_same_generic_200(): void
+    public function test_recover_nonexistent_email_returns_same_generic_200_and_no_mail(): void
     {
         $res = $this->controller()->recover($this->request(['email' => 'ghost@example.com']), new RequestContext());
 
         $this->assertSame(200, $res->status);
         // Byte-identical to the existing-email response: no enumeration signal.
         $this->assertSame('[]', $res->body);
+        $this->assertSame([], $this->mailer->sent);
+    }
+
+    public function test_recover_audits_even_for_unknown_email(): void
+    {
+        $this->controller()->recover(
+            $this->request(['email' => 'probe@example.com']),
+            new RequestContext(),
+        );
+
+        $actions = array_column(
+            array_column($this->audit()->recent(10), 'payload'),
+            'action',
+        );
+        $this->assertContains('recover_requested', $actions);
     }
 
     public function test_recover_existing_and_nonexistent_are_indistinguishable(): void
@@ -69,14 +91,17 @@ final class RecoverEndpointTest extends ControllerTestCase
         $this->assertSame(401, $res->status);
     }
 
-    public function test_reauthenticate_authenticated_returns_200(): void
+    public function test_reauthenticate_authenticated_returns_200_and_mails_a_nonce(): void
     {
         $config = $this->testConfig();
         $this->authService($config)->signup('reauth@example.com', self::PASSWORD, '203.0.113.5');
         $issued = $this->authService($config)->login('reauth@example.com', self::PASSWORD, '203.0.113.5', 'ua');
         $ctx = $this->contextFor($issued->accessToken);
 
-        $res = $this->controller()->reauthenticate($this->request([]), $ctx);
+        $res = $this->controller($config)->reauthenticate($this->request([]), $ctx);
         $this->assertSame(200, $res->status);
+        $this->assertCount(1, $this->mailer->sent);
+        // Nonce mails are code-only: no verify link to hijack.
+        $this->assertStringNotContainsString('/verify', $this->mailer->last()['text']);
     }
 }

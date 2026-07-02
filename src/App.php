@@ -3,19 +3,23 @@ declare(strict_types=1);
 
 namespace Maludb\Auth;
 
+use Maludb\Auth\Controllers\AdminActionsController;
 use Maludb\Auth\Controllers\AdminUsersController;
 use Maludb\Auth\Controllers\LogoutController;
 use Maludb\Auth\Controllers\MetaController;
+use Maludb\Auth\Controllers\OtpController;
 use Maludb\Auth\Controllers\RecoverController;
 use Maludb\Auth\Controllers\SignupController;
 use Maludb\Auth\Controllers\TokenController;
 use Maludb\Auth\Controllers\UserController;
+use Maludb\Auth\Controllers\VerifyController;
 use Maludb\Auth\Http\ErrorMapper;
 use Maludb\Auth\Http\Middleware\{AuthContext, Cors, CsrfGuard, RateLimit, RequireAdmin, SecurityHeaders};
 use Maludb\Auth\Http\{Request, RequestContext, Response, Router, TokenResponder};
-use Maludb\Auth\Repositories\{AuditRepository, IdentityRepository, RefreshTokenRepository, SessionRepository, UserRepository};
-use Maludb\Auth\Security\{Csrf, Jwks, Jwt, Password, RateLimiter, TokenHash};
-use Maludb\Auth\Services\{AuthService, SessionService, TokenService};
+use Maludb\Auth\Mail\{LogMailer, MailComposer, MailerInterface, NullMailer};
+use Maludb\Auth\Repositories\{AuditRepository, IdentityRepository, OneTimeTokenRepository, RefreshTokenRepository, SessionRepository, UserRepository};
+use Maludb\Auth\Security\{Csrf, Jwks, Jwt, Password, RateLimiter, RedirectValidator, TokenHash};
+use Maludb\Auth\Services\{AuthService, OtpService, SessionService, TokenService};
 use Maludb\Auth\Support\{Config, Database, Env};
 use PDO;
 
@@ -56,6 +60,9 @@ final class App
         private TokenService $tokens,
         private TokenResponder $responder,
         private MetaController $meta,
+        private OtpService $otp,
+        private RedirectValidator $redirects,
+        private MailComposer $composer,
     ) {}
 
     public static function boot(): self
@@ -73,9 +80,15 @@ final class App
     /**
      * Build the fully-wired app from an existing Config + PDO. Extracted so
      * integration tests can drive the real router against the test DB/keys.
+     * $mailer overrides the config-selected driver (tests inject ArrayMailer).
      */
-    public static function fromConfig(Config $config, Database $database, PDO $pdo, string $base): self
-    {
+    public static function fromConfig(
+        Config $config,
+        Database $database,
+        PDO $pdo,
+        string $base,
+        ?MailerInterface $mailer = null,
+    ): self {
         $jwt = self::buildJwt($config, $base);
         $csrf = new Csrf();
         $tokenHash = new TokenHash();
@@ -94,6 +107,20 @@ final class App
         );
         $auth = new AuthService($users, $tokens, $password, $audit, $identities, $config, $pdo);
         $responder = new TokenResponder();
+
+        $mailer ??= match ($config->get('mailer.driver', 'log')) {
+            'null' => new NullMailer(),
+            default => new LogMailer(),
+        };
+        $composer = new MailComposer((string) $config->get('app.url'), $config->get('site.url'));
+        $otp = new OtpService(
+            $users, $identities, new OneTimeTokenRepository($pdo), $tokens, $audit,
+            $mailer, $composer, $tokenHash, $config, $pdo,
+        );
+        $redirects = new RedirectValidator(
+            $config->get('site.url'),
+            (array) $config->get('site.uri_allow_list', []),
+        );
 
         $rateLimit = new RateLimit(
             new RateLimiter($pdo),
@@ -115,7 +142,7 @@ final class App
             $config, $database, $pdo, $base,
             new SecurityHeaders(), $cors, $rateLimit,
             $jwt, $csrf, $sessions, $users, $audit, $password,
-            $auth, $tokens, $responder, $meta,
+            $auth, $tokens, $responder, $meta, $otp, $redirects, $composer,
         );
     }
 
@@ -189,12 +216,18 @@ final class App
         $b = self::BASE_PATH;
 
         // Controllers that touch the per-request context are rebuilt per request.
-        $signup = new SignupController($this->auth, $this->tokens, $this->responder, $this->config);
+        $signup = new SignupController($this->auth, $this->tokens, $this->responder, $this->config, $this->otp);
         $token = new TokenController($this->auth, $this->tokens, $this->responder, $this->config);
         $logout = new LogoutController($this->sessions, $this->audit);
-        $user = new UserController($this->users, $this->sessions, $this->audit, $this->password, $this->csrf);
-        $recover = new RecoverController($this->audit);
+        $user = new UserController(
+            $this->users, $this->sessions, $this->audit,
+            $this->password, $this->csrf, $this->otp, $this->config,
+        );
+        $recover = new RecoverController($this->otp, $this->users, $this->audit);
+        $otpCtrl = new OtpController($this->otp);
+        $verify = new VerifyController($this->otp, $this->responder, $this->redirects, $this->config);
         $admin = new AdminUsersController($this->users, $this->audit, $this->password);
+        $adminActions = new AdminActionsController($this->users, $this->otp, $this->composer, $this->audit);
 
         // --- Public / meta ------------------------------------------------
         $router->add('GET', $b . '/health', $this->meta->health(...));
@@ -204,6 +237,11 @@ final class App
         $router->add('POST', $b . '/signup', fn(Request $r) => $signup->handle($r, $context));
         $router->add('POST', $b . '/token', fn(Request $r) => $token->handle($r, $context));
         $router->add('POST', $b . '/recover', fn(Request $r) => $recover->recover($r, $context));
+        $router->add('POST', $b . '/otp', fn(Request $r) => $otpCtrl->otp($r, $context));
+        $router->add('POST', $b . '/magiclink', fn(Request $r) => $otpCtrl->magiclink($r, $context));
+        $router->add('POST', $b . '/resend', fn(Request $r) => $otpCtrl->resend($r, $context));
+        $router->add('GET', $b . '/verify', fn(Request $r) => $verify->get($r, $context));
+        $router->add('POST', $b . '/verify', fn(Request $r) => $verify->post($r, $context));
 
         // --- Authenticated ------------------------------------------------
         $router->add('POST', $b . '/logout', fn(Request $r) => $logout->handle($r, $context));
@@ -219,6 +257,10 @@ final class App
         $router->add('GET', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->show($r, $p), $requireAdmin);
         $router->add('PUT', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->update($r, $p), $requireAdmin);
         $router->add('DELETE', $b . '/admin/users/{id}', fn(Request $r, array $p) => $admin->delete($r, $p), $requireAdmin);
+
+        $router->add('POST', $b . '/admin/invite', fn(Request $r) => $adminActions->invite($r), $requireAdmin);
+        $router->add('POST', $b . '/admin/generate_link', fn(Request $r) => $adminActions->generateLink($r), $requireAdmin);
+        $router->add('GET', $b . '/admin/audit', fn(Request $r) => $adminActions->auditLog($r), $requireAdmin);
 
         return $router;
     }
