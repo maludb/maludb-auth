@@ -38,7 +38,7 @@ final class TokenController
     public function handle(Request $request, RequestContext $context): Response
     {
         try {
-            return match ($request->query('grant_type')) {
+            return match ($this->grantType($request)) {
                 'password' => $this->passwordGrant($request),
                 'refresh_token' => $this->refreshGrant($request),
                 default => Response::json([
@@ -49,6 +49,22 @@ final class TokenController
         } catch (\Throwable $e) {
             return ErrorMapper::map($e);
         }
+    }
+
+    /**
+     * Resolve grant_type from the QUERY string (canonical), falling back to the
+     * JSON body. This mirrors RateLimit's resolution so the limiter and the
+     * controller always agree on the grant a request carries (Unit 12 M1).
+     */
+    private function grantType(Request $request): ?string
+    {
+        $grant = $request->query('grant_type');
+        if ($grant === null || $grant === '') {
+            $bodyGrant = $request->input('grant_type');
+            $grant = is_string($bodyGrant) ? $bodyGrant : null;
+        }
+
+        return $grant;
     }
 
     private function passwordGrant(Request $request): Response
