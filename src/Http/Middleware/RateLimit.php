@@ -79,7 +79,14 @@ final class RateLimit implements MiddlewareInterface
         $path = $request->path;
 
         if ($this->pathEndsWith($path, '/token')) {
+            // Query is canonical per the design; the JSON body is a defensive
+            // fallback so the login limiter can't disappear if a client sends
+            // grant_type in the body instead.
             $grant = $request->query('grant_type');
+            if ($grant === null || $grant === '') {
+                $bodyGrant = $request->input('grant_type');
+                $grant = is_string($bodyGrant) ? $bodyGrant : null;
+            }
             return match ($grant) {
                 'password' => 'login',
                 'refresh_token' => 'token_refresh',

@@ -56,6 +56,20 @@ final class CsrfGuardTest extends IntegrationTestCase
         $this->assertStringContainsString('csrf_failed', $res->body);
     }
 
+    public function test_cookie_auth_lowercase_unsafe_method_still_enforces_csrf(): void
+    {
+        // A lowercase `post` must not be treated as a safe method. If method
+        // normalization regresses, isUnsafeMethod() returns false and CsrfGuard
+        // skips the check entirely — a silent bypass. This asserts 403.
+        $sid = $this->makeSession();
+        [$guard] = $this->guardWith($this->cookieUser($sid));
+        $req = new Request(method: 'post', path: '/x'); // lowercase, no X-CSRF-Token
+
+        $res = $guard->handle($req, $this->next());
+
+        $this->assertSame(403, $res->status);
+    }
+
     public function test_cookie_auth_unsafe_wrong_token_is_403(): void
     {
         $sid = $this->makeSession();

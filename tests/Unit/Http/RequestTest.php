@@ -30,4 +30,37 @@ final class RequestTest extends TestCase
         $this->assertTrue($r->wantsCookies());
         $this->assertSame('abc', $r->bearerToken());
     }
+
+    /**
+     * The method must be canonicalized to uppercase at the edge. Storing it
+     * verbatim would let a lowercase `post` slip past isUnsafeMethod() (which
+     * compares against uppercase literals) and bypass CSRF/rate-limit handling.
+     */
+    public function test_method_is_normalized_to_uppercase(): void
+    {
+        $this->assertSame('POST', (new Request(method: 'post', path: '/x'))->method);
+        $this->assertTrue((new Request(method: 'post', path: '/x'))->isUnsafeMethod());
+        $this->assertSame('DELETE', (new Request(method: ' Delete ', path: '/x'))->method);
+        $this->assertTrue((new Request(method: 'Delete', path: '/x'))->isUnsafeMethod());
+        // Idempotent for already-canonical input.
+        $this->assertSame('GET', (new Request(method: 'GET', path: '/x'))->method);
+        $this->assertFalse((new Request(method: 'GET', path: '/x'))->isUnsafeMethod());
+    }
+
+    /**
+     * bearerToken() must read ONLY the real Authorization header. An attacker
+     * must not be able to promote to bearer precedence (which skips CSRF) via a
+     * query param or body field named access_token.
+     */
+    public function test_bearer_token_reads_only_authorization_header(): void
+    {
+        $r = new Request(
+            method: 'GET',
+            path: '/x',
+            query: ['access_token' => 'query-token'],
+            rawBody: '{"access_token":"body-token"}',
+        );
+
+        $this->assertNull($r->bearerToken());
+    }
 }

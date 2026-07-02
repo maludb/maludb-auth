@@ -57,6 +57,22 @@ final class RateLimitMiddlewareTest extends IntegrationTestCase
         $this->assertStringContainsString('over_rate_limit', $res->body);
     }
 
+    public function test_grant_type_in_body_is_categorized_as_login(): void
+    {
+        // Query is canonical, but a body-only grant_type must still be caught so
+        // the login limiter can't silently disappear for such clients.
+        $mw = new RateLimit(new RateLimiter(self::$pdo), self::LIMITS);
+        $ip = '198.51.100.77';
+        $body = json_encode(['grant_type' => 'password']);
+        $req = fn() => new Request(method: 'POST', path: '/auth/v1/token', rawBody: $body, ip: $ip);
+
+        for ($i = 0; $i < 3; $i++) {
+            $this->assertSame(200, $mw->handle($req(), $this->next())->status);
+        }
+
+        $this->assertSame(429, $mw->handle($req(), $this->next())->status);
+    }
+
     public function test_email_bucket_enforced_independently_of_ip(): void
     {
         $mw = new RateLimit(new RateLimiter(self::$pdo), self::LIMITS);
