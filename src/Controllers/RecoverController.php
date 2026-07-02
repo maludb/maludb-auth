@@ -8,30 +8,38 @@ use Maludb\Auth\Http\Request;
 use Maludb\Auth\Http\RequestContext;
 use Maludb\Auth\Http\Response;
 use Maludb\Auth\Http\Validator;
-use Maludb\Auth\Repositories\AuditRepository;
+use Maludb\Auth\Repositories\UserRepository;
+use Maludb\Auth\Services\OtpService;
 
 /**
  * Password recovery + reauthentication request endpoints.
  *
  * Both ALWAYS return a generic 200 regardless of whether the email/user exists,
- * so neither can be used to enumerate accounts. Actual token minting + email
- * delivery are Phase 2 (no mailer yet).
+ * so neither can be used to enumerate accounts. OtpService::send() is silent on
+ * every "don't send" branch, and the emailed token is redeemed via /verify
+ * (recovery) or consumed as the PUT /user password-change nonce (reauth).
  */
 final class RecoverController
 {
-    public function __construct(private AuditRepository $audit) {}
+    public function __construct(
+        private OtpService $otp,
+        private UserRepository $users,
+    ) {}
 
     public function recover(Request $request, RequestContext $context): Response
     {
         try {
             // Validate shape only; never branch the response on existence.
             $email = Validator::email($request->input('email'));
+            $redirectTo = $request->input('redirect_to', '');
 
-            // TODO(Phase 2): create a recovery one-time token row and send the
-            // recovery email via the mailer. Until then we only audit the request
-            // and return the same generic 200 whether or not the email exists —
-            // no enumeration signal.
-            $this->audit->record('recover_requested', ['email' => $email], $request->ip);
+            $this->otp->send(
+                'recovery',
+                $email,
+                $request->ip,
+                createUser: false,
+                redirectTo: is_string($redirectTo) ? $redirectTo : '',
+            );
 
             return $this->generic();
         } catch (\Throwable $e) {
@@ -45,9 +53,17 @@ final class RecoverController
             return Response::json(['error' => 'not_authenticated'], 401);
         }
 
-        // TODO(Phase 2): generate a reauthentication nonce and deliver it via the
-        // mailer/SMS. Stubbed to a generic 200 for Phase 1.
-        return $this->generic();
+        try {
+            $user = $this->users->findById($context->user->userId);
+            if ($user !== null && is_string($user['email'] ?? null) && $user['email'] !== '') {
+                // Code-only mail (no verify link); consumed by PUT /user as `nonce`.
+                $this->otp->send('reauthentication', (string) $user['email'], $request->ip);
+            }
+
+            return $this->generic();
+        } catch (\Throwable $e) {
+            return ErrorMapper::map($e);
+        }
     }
 
     private function generic(): Response

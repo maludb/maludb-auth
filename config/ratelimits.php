@@ -28,6 +28,9 @@ return [
     // POST /verify — email/phone verification.
     'verify'        => ['capacity' => 30, 'refillPerSecond' => 30 / 3600],   // ~30/hr
 
-    // POST /otp — one-time-password / magic-link request.
+    // POST /otp, /magiclink — one-time-password / magic-link request.
     'otp'           => ['capacity' => 10, 'refillPerSecond' => 10 / 3600],   // ~10/hr
+
+    // POST /resend — re-send confirmation/OTP mail.
+    'resend'        => ['capacity' => 10, 'refillPerSecond' => 10 / 3600],   // ~10/hr
 ];
