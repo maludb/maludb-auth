@@ -90,6 +90,12 @@ final class UserController
 
             $passwordChanged = false;
             if (array_key_exists('password', $input) && $input['password'] !== null && $input['password'] !== '') {
+                // Hash (which validates the policy and throws on a weak password)
+                // BEFORE consuming the single-use nonce — otherwise a weak
+                // password would burn the nonce and force the user to request a
+                // fresh reauthentication email just to retry.
+                $hashed = $this->password->hash((string) $input['password']);
+
                 // When the deployment demands it, a password change must present
                 // a live reauthentication nonce (mailed by POST /reauthenticate)
                 // on top of the valid session (+ CSRF in cookie mode). The nonce
@@ -105,7 +111,7 @@ final class UserController
                         ], 400);
                     }
                 }
-                $attrs['encrypted_password'] = $this->password->hash((string) $input['password']);
+                $attrs['encrypted_password'] = $hashed;
                 $passwordChanged = true;
             }
 

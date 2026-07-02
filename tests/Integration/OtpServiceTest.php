@@ -113,6 +113,16 @@ final class OtpServiceTest extends IntegrationTestCase
         return $m[1];
     }
 
+    /** Pull the user-salted token_hash out of the verify link in the last mail. */
+    private function mailedTokenHash(): string
+    {
+        $text = (string) $this->mailer->last()['text'];
+        preg_match('/token_hash=([0-9a-f]{64})/', $text, $m);
+        $this->assertNotEmpty($m, 'Expected a token_hash link in the mail body.');
+
+        return $m[1];
+    }
+
     private function backdateToken(string $userId, string $type, int $seconds): void
     {
         $stmt = self::$pdo->prepare(
@@ -135,12 +145,42 @@ final class OtpServiceTest extends IntegrationTestCase
         $this->assertCount(1, $this->mailer->sent);
         $this->assertSame('rec@example.com', $this->mailer->last()['to']);
 
-        $code = $this->mailedCode();
-        $hash = (new TokenHash())->hash($code);
+        $hash = $this->mailedTokenHash();
         $row = (new OneTimeTokenRepository(self::$pdo))->findByHash($hash);
         $this->assertNotNull($row);
         $this->assertSame($user['id'], $row['user_id']);
         $this->assertSame('recovery', $row['token_type']);
+    }
+
+    public function test_stored_hash_is_salted_so_bare_code_hash_does_not_resolve(): void
+    {
+        $svc = $this->otpService();
+        $this->createUser('salted@example.com');
+        $svc->send('recovery', 'salted@example.com', '203.0.113.1');
+
+        $repo = new OneTimeTokenRepository(self::$pdo);
+        $code = $this->mailedCode();
+
+        // The OLD scheme stored sha256(code); a collision across users made the
+        // link form ambiguous. The salted hash must NOT be findable by the bare
+        // code hash — otherwise two users sharing a 6-digit code would collide.
+        $this->assertNull($repo->findByHash(hash('sha256', $code)));
+        $this->assertNotNull($repo->findByHash($this->mailedTokenHash()));
+    }
+
+    public function test_link_hash_of_one_user_never_resolves_to_another(): void
+    {
+        $svc = $this->otpService();
+        $a = $this->createUser('a-link@example.com');
+        $this->createUser('b-link@example.com');
+
+        $svc->send('recovery', 'a-link@example.com', '203.0.113.1');
+        $aHash = $this->mailedTokenHash();
+        $svc->send('recovery', 'b-link@example.com', '203.0.113.1');
+
+        // A's link redeems into A's session, regardless of B's concurrent token.
+        $issued = $svc->verify('recovery', null, null, $aHash, 'ip', 'ua');
+        $this->assertSame($a['id'], $this->jwt()->verify($issued->accessToken)['sub']);
     }
 
     public function test_send_recovery_for_unknown_email_is_silent(): void
@@ -245,7 +285,7 @@ final class OtpServiceTest extends IntegrationTestCase
         $svc = $this->otpService();
         $user = $this->createUser('link@example.com');
         $svc->send('recovery', 'link@example.com', '203.0.113.1');
-        $hash = (new TokenHash())->hash($this->mailedCode());
+        $hash = $this->mailedTokenHash();
 
         $issued = $svc->verify('recovery', null, null, $hash, '203.0.113.1', 'ua');
         $this->assertSame($user['id'], $this->jwt()->verify($issued->accessToken)['sub']);

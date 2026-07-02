@@ -33,4 +33,11 @@ return [
 
     // POST /resend — re-send confirmation/OTP mail.
     'resend'        => ['capacity' => 10, 'refillPerSecond' => 10 / 3600],   // ~10/hr
+
+    // POST /reauthenticate — mints + mails a reauth nonce (email-bomb sink).
+    'reauth'        => ['capacity' => 5,  'refillPerSecond' => 5 / 3600],    // ~5/hr
+
+    // PUT /user carrying a password — throttles reauth-nonce brute-forcing
+    // (the nonce is a 6-digit code; without this the 10^6 space is walkable).
+    'password_update' => ['capacity' => 10, 'refillPerSecond' => 10 / 3600], // ~10/hr
 ];

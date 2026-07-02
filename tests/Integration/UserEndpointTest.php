@@ -186,6 +186,33 @@ final class UserEndpointTest extends ControllerTestCase
         $this->assertSame('reauthentication_needed', json_decode($replay->body, true)['error']);
     }
 
+    public function test_weak_password_does_not_burn_the_nonce(): void
+    {
+        $config = $this->reauthConfig();
+        $controller = $this->controller($config);
+        $otp = $this->otpService($config);
+        $issued = $this->loginUser($config, 'weak-keeps-nonce@example.com');
+        $ctx = $this->contextFor($issued->accessToken);
+
+        $otp->send('reauthentication', 'weak-keeps-nonce@example.com', 'ip');
+        $nonce = $this->mailedCode();
+
+        // First attempt uses a too-short password -> 400 weak_password.
+        $weak = $controller->update(
+            $this->request('PUT', ['password' => 'short', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(400, $weak->status);
+        $this->assertSame('weak_password', json_decode($weak->body, true)['error']);
+
+        // The nonce must still be usable for a proper retry.
+        $ok = $controller->update(
+            $this->request('PUT', ['password' => 'a-brand-new-strong-password', 'nonce' => $nonce]),
+            $ctx,
+        );
+        $this->assertSame(200, $ok->status);
+    }
+
     public function test_password_change_without_nonce_still_works_when_gate_off(): void
     {
         $config = $this->testConfig(); // gate defaults off

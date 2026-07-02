@@ -7,7 +7,6 @@ use Maludb\Auth\Controllers\VerifyController;
 use Maludb\Auth\Http\Request;
 use Maludb\Auth\Http\RequestContext;
 use Maludb\Auth\Security\RedirectValidator;
-use Maludb\Auth\Security\TokenHash;
 use Maludb\Auth\Services\OtpService;
 use Maludb\Auth\Support\Config;
 
@@ -82,8 +81,8 @@ final class VerifyEndpointTest extends ControllerTestCase
     {
         $config = $this->testConfig();
         $c = $this->controller($config);
-        $code = $this->recoveryCodeFor('post-hash@example.com', $config);
-        $hash = (new TokenHash())->hash($code);
+        $this->recoveryCodeFor('post-hash@example.com', $config);
+        $hash = $this->mailedTokenHash();
 
         $res = $c->post(
             $this->post(['type' => 'recovery', 'token_hash' => $hash], ['cookie' => 'true']),
@@ -127,8 +126,8 @@ final class VerifyEndpointTest extends ControllerTestCase
     {
         $config = $this->testConfig();
         $c = $this->controller($config);
-        $code = $this->recoveryCodeFor('get-happy@example.com', $config);
-        $hash = (new TokenHash())->hash($code);
+        $this->recoveryCodeFor('get-happy@example.com', $config);
+        $hash = $this->mailedTokenHash();
 
         $res = $c->get($this->get([
             'token_hash' => $hash,
@@ -150,12 +149,35 @@ final class VerifyEndpointTest extends ControllerTestCase
         $this->assertSame([], $res->cookies);
     }
 
+    public function test_get_verify_appends_to_existing_hash_router_fragment(): void
+    {
+        $config = $this->testConfig();
+        $c = $this->controller($config);
+        $this->recoveryCodeFor('hashrouter@example.com', $config);
+        $hash = $this->mailedTokenHash();
+
+        $res = $c->get($this->get([
+            'token_hash' => $hash,
+            'type' => 'recovery',
+            'redirect_to' => 'http://localhost:3000/#/auth/callback',
+        ]), new RequestContext());
+
+        $this->assertSame(302, $res->status);
+        $location = $res->headers['Location'];
+        // Exactly ONE '#': the SPA route stays intact and tokens join with '&'.
+        $this->assertSame(1, substr_count($location, '#'));
+        $this->assertStringStartsWith('http://localhost:3000/#/auth/callback&', $location);
+        parse_str(explode('#', $location, 2)[1], $frag);
+        // '/auth/callback' is the first key; access_token must still be parseable.
+        $this->assertArrayHasKey('access_token', $frag);
+    }
+
     public function test_get_verify_disallowed_redirect_falls_back_to_site_url(): void
     {
         $config = $this->testConfig();
         $c = $this->controller($config);
-        $code = $this->recoveryCodeFor('get-evil@example.com', $config);
-        $hash = (new TokenHash())->hash($code);
+        $this->recoveryCodeFor('get-evil@example.com', $config);
+        $hash = $this->mailedTokenHash();
 
         $res = $c->get($this->get([
             'token_hash' => $hash,

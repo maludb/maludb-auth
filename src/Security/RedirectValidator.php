@@ -25,8 +25,9 @@ final class RedirectValidator
         if ($requested === null || $requested === '') {
             return $fallback;
         }
-        if (!$this->isHttpUrl($requested)) {
-            return $fallback;
+        $reqOrigin = $this->originOf($requested);
+        if ($reqOrigin === null) {
+            return $fallback; // rejects //host, javascript:, data:, missing host
         }
 
         $candidates = $this->allowList;
@@ -34,18 +35,30 @@ final class RedirectValidator
             $candidates[] = $fallback;
         }
 
-        $normalizedRequest = $this->normalize($requested);
+        $reqRemainder = $this->remainderOf($requested);
         foreach ($candidates as $entry) {
             $entry = trim($entry);
             if ($entry === '') {
                 continue;
             }
-            if (str_ends_with($entry, '*')) {
-                $prefix = $this->normalize(substr($entry, 0, -1));
-                if ($prefix !== '' && str_starts_with($normalizedRequest, $prefix)) {
+
+            $isWildcard = str_ends_with($entry, '*');
+            $base = $isWildcard ? substr($entry, 0, -1) : $entry;
+
+            // Origin (scheme://host:port) MUST match exactly — a prefix compare
+            // on the whole URL would let 'https://app.example.com*' be satisfied
+            // by 'https://app.example.com.evil.com'. Only the PATH is prefixed.
+            $entryOrigin = $this->originOf($base);
+            if ($entryOrigin === null || $entryOrigin !== $reqOrigin) {
+                continue;
+            }
+
+            $entryRemainder = $this->remainderOf($base);
+            if ($isWildcard) {
+                if (str_starts_with($reqRemainder, $entryRemainder)) {
                     return $requested;
                 }
-            } elseif ($normalizedRequest === $this->normalize($entry)) {
+            } elseif ($reqRemainder === $entryRemainder) {
                 return $requested;
             }
         }
@@ -53,28 +66,34 @@ final class RedirectValidator
         return $fallback;
     }
 
-    /** Absolute http(s) URL with a real host — rejects //host and exotic schemes. */
-    private function isHttpUrl(string $url): bool
+    /**
+     * Lowercased scheme://host[:port] for an absolute http(s) URL, or null if
+     * the URL has no http(s) scheme or no host (rejects //host, javascript:,
+     * data:, mailto:, relative URLs).
+     */
+    private function originOf(string $url): ?string
     {
-        $scheme = parse_url($url, PHP_URL_SCHEME);
-        $host = parse_url($url, PHP_URL_HOST);
+        $parts = parse_url($url);
+        if ($parts === false || !isset($parts['scheme'], $parts['host'])) {
+            return null;
+        }
+        $scheme = strtolower($parts['scheme']);
+        if (!in_array($scheme, ['http', 'https'], true) || $parts['host'] === '') {
+            return null;
+        }
+        $origin = $scheme . '://' . strtolower($parts['host']);
+        if (isset($parts['port'])) {
+            $origin .= ':' . $parts['port'];
+        }
 
-        return is_string($scheme)
-            && in_array(strtolower($scheme), ['http', 'https'], true)
-            && is_string($host)
-            && $host !== '';
+        return $origin;
     }
 
-    /**
-     * Lowercase the scheme://host[:port] part so origin comparison is
-     * case-insensitive while the path/query keep their case.
-     */
-    private function normalize(string $url): string
+    /** Everything after the origin (path + query + fragment), case-preserved. */
+    private function remainderOf(string $url): string
     {
-        return preg_replace_callback(
-            '#^[a-zA-Z][a-zA-Z0-9+.-]*://[^/]*#',
-            static fn(array $m): string => strtolower($m[0]),
-            $url,
-        ) ?? $url;
+        $stripped = preg_replace('~^[a-zA-Z][a-zA-Z0-9+.-]*://[^/?#]*~', '', $url, 1);
+
+        return $stripped ?? '';
     }
 }

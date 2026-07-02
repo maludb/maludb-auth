@@ -15,6 +15,7 @@ final class RecoverEndpointTest extends ControllerTestCase
         return new RecoverController(
             $this->otpService($config ?? $this->testConfig()),
             $this->users(),
+            $this->audit(),
         );
     }
 
@@ -50,6 +51,20 @@ final class RecoverEndpointTest extends ControllerTestCase
         // Byte-identical to the existing-email response: no enumeration signal.
         $this->assertSame('[]', $res->body);
         $this->assertSame([], $this->mailer->sent);
+    }
+
+    public function test_recover_audits_even_for_unknown_email(): void
+    {
+        $this->controller()->recover(
+            $this->request(['email' => 'probe@example.com']),
+            new RequestContext(),
+        );
+
+        $actions = array_column(
+            array_column($this->audit()->recent(10), 'payload'),
+            'action',
+        );
+        $this->assertContains('recover_requested', $actions);
     }
 
     public function test_recover_existing_and_nonexistent_are_indistinguishable(): void

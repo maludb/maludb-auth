@@ -6,7 +6,6 @@ namespace Maludb\Auth\Tests\Integration;
 use Maludb\Auth\Controllers\AdminActionsController;
 use Maludb\Auth\Http\Request;
 use Maludb\Auth\Mail\MailComposer;
-use Maludb\Auth\Security\TokenHash;
 use Maludb\Auth\Support\Config;
 
 final class AdminActionsEndpointTest extends ControllerTestCase
@@ -109,7 +108,7 @@ final class AdminActionsEndpointTest extends ControllerTestCase
         $body = json_decode($res->body, true);
         $this->assertSame('recovery', $body['verification_type']);
         $this->assertMatchesRegularExpression('/^[0-9]{6}$/', $body['email_otp']);
-        $this->assertSame((new TokenHash())->hash($body['email_otp']), $body['hashed_token']);
+        $this->assertMatchesRegularExpression('/^[0-9a-f]{64}$/', $body['hashed_token']);
         $this->assertStringContainsString('/auth/v1/verify?token_hash=' . $body['hashed_token'], $body['action_link']);
         $this->assertStringContainsString('type=recovery', $body['action_link']);
 

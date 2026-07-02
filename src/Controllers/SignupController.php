@@ -24,6 +24,12 @@ use Maludb\Auth\Support\Config;
  * a caller cannot probe which emails have accounts. When autoconfirm is on the
  * success response also issues a live session (like login); otherwise it returns
  * only the public user (client must confirm email — Phase 2).
+ *
+ * As with /recover, the defense is at the response level, not timing: a genuine
+ * signup performs an insert + confirmation mail while the duplicate path returns
+ * the fabricated user immediately, so a latency oracle is theoretically possible.
+ * The ~10/hr signup rate limit is the accepted bound; constant-work hardening is
+ * deferred with the mailer work.
  */
 final class SignupController
 {

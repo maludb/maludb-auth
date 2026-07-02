@@ -167,6 +167,21 @@ abstract class ControllerTestCase extends IntegrationTestCase
     }
 
     /**
+     * Pull the (user-salted) token_hash out of the verify link in the last
+     * captured mail — mirrors what a user clicking the link actually sends,
+     * and avoids recomputing the hash (which the salt makes non-trivial).
+     */
+    protected function mailedTokenHash(): string
+    {
+        $last = $this->mailer->last();
+        $this->assertNotNull($last, 'Expected a captured mail.');
+        preg_match('/token_hash=([0-9a-f]{64})/', $last['text'], $m);
+        $this->assertNotEmpty($m, 'Expected a token_hash link in the mail body.');
+
+        return $m[1];
+    }
+
+    /**
      * Build a RequestContext whose user was resolved from a genuinely-issued
      * access token (so sessionId/role match a real session row).
      */

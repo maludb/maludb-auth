@@ -13,6 +13,7 @@ use Maludb\Auth\Repositories\IdentityRepository;
 use Maludb\Auth\Repositories\OneTimeTokenRepository;
 use Maludb\Auth\Repositories\UserRepository;
 use Maludb\Auth\Security\TokenHash;
+use Maludb\Auth\Support\BanCheck;
 use Maludb\Auth\Support\Config;
 use Maludb\Auth\Support\EmailNormalizer;
 use PDO;
@@ -69,7 +70,7 @@ final class OtpService
             $user = $this->createPasswordlessUser($normalized);
         }
 
-        if ($this->isBanned($user)) {
+        if (BanCheck::isBanned($user)) {
             return; // Never mail live login material to a banned account.
         }
         if ($type === 'confirmation' && ($user['email_confirmed_at'] ?? null) !== null) {
@@ -93,10 +94,22 @@ final class OtpService
     public function mint(array $user, string $type): array
     {
         $token = $this->tokenHash->otp();
-        $hash = $this->tokenHash->hash($token);
+        $hash = $this->storedHash((string) $user['id'], $token);
         $this->oneTimeTokens->replace((string) $user['id'], $type, $hash, (string) ($user['email'] ?? ''));
 
         return ['token' => $token, 'hash' => $hash];
+    }
+
+    /**
+     * The value stored in token_hash. The 6-digit code alone hashes into only
+     * 10^6 buckets, so two users can draw the same code and collide; salting
+     * with the user id makes the stored hash effectively unique (a collision
+     * would need a full SHA-256 collision). This is what closes the link-form
+     * redemption from resolving into another user's row.
+     */
+    private function storedHash(string $userId, string $secret): string
+    {
+        return hash('sha256', $userId . ':' . $secret);
     }
 
     /**
@@ -124,7 +137,7 @@ final class OtpService
             $this->oneTimeTokens->delete((string) $row['id']);
             throw new InvalidOtpException('Token is invalid or has expired.');
         }
-        if ($this->isBanned($user)) {
+        if (BanCheck::isBanned($user)) {
             throw new UserBannedException('This account is banned.');
         }
 
@@ -169,7 +182,7 @@ final class OtpService
      */
     public function consumeReauthentication(string $userId, string $nonce): bool
     {
-        $row = $this->oneTimeTokens->findByHash($this->tokenHash->hash($nonce));
+        $row = $this->oneTimeTokens->findByHash($this->storedHash($userId, $nonce));
         if ($row === null
             || $row['token_type'] !== 'reauthentication'
             || (string) $row['user_id'] !== $userId) {
@@ -189,13 +202,18 @@ final class OtpService
     private function resolveRow(string $type, ?string $email, ?string $token, ?string $tokenHash): array
     {
         if ($tokenHash !== null && $tokenHash !== '') {
+            // Link form: the emailed token_hash already embeds the user id
+            // (storedHash), so a match uniquely identifies one user's row.
             $row = $this->oneTimeTokens->findByHash($tokenHash);
         } elseif ($token !== null && $token !== '' && $email !== null && $email !== '') {
-            $row = $this->oneTimeTokens->findByHash($this->tokenHash->hash($token));
-            if ($row !== null
-                && !hash_equals(EmailNormalizer::normalize((string) $row['relates_to']), EmailNormalizer::normalize($email))) {
-                $row = null;
-            }
+            // Code form: resolve the user from the email FIRST, then rebuild the
+            // user-salted hash. This binds the 6-digit code to that specific
+            // account, so a code that collides with another user's code cannot
+            // redeem into the wrong row.
+            $user = $this->users->findByEmail(EmailNormalizer::normalize($email));
+            $row = $user === null
+                ? null
+                : $this->oneTimeTokens->findByHash($this->storedHash((string) $user['id'], $token));
         } else {
             $row = null;
         }
@@ -270,17 +288,5 @@ final class OtpService
         $this->pdo->beginTransaction();
 
         return true;
-    }
-
-    /** @param array<string,mixed> $user */
-    private function isBanned(array $user): bool
-    {
-        $bannedUntil = $user['banned_until'] ?? null;
-        if ($bannedUntil === null || $bannedUntil === '') {
-            return false;
-        }
-        $ts = strtotime((string) $bannedUntil);
-
-        return $ts !== false && $ts > time();
     }
 }

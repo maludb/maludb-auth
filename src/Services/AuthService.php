@@ -164,7 +164,7 @@ final class AuthService
             throw new InvalidCredentialsException('Invalid email or password.');
         }
 
-        if ($this->isBanned($user)) {
+        if (\Maludb\Auth\Support\BanCheck::isBanned($user)) {
             throw new UserBannedException('This account is banned.');
         }
 
@@ -189,18 +189,5 @@ final class AuthService
         $this->audit->record('login', ['user_id' => $user['id']], $ip);
 
         return $issued;
-    }
-
-    /** @param array<string,mixed> $user */
-    private function isBanned(array $user): bool
-    {
-        $bannedUntil = $user['banned_until'] ?? null;
-        if ($bannedUntil === null || $bannedUntil === '') {
-            return false;
-        }
-
-        $ts = strtotime((string) $bannedUntil);
-
-        return $ts !== false && $ts > time();
     }
 }

@@ -68,6 +68,16 @@ final class EndToEndPasswordlessFlowTest extends IntegrationTestCase
         return $m[1];
     }
 
+    private function mailedTokenHash(): string
+    {
+        $last = $this->mailer->last();
+        $this->assertNotNull($last, 'Expected a captured mail.');
+        preg_match('/token_hash=([0-9a-f]{64})/', $last['text'], $m);
+        $this->assertNotEmpty($m);
+
+        return $m[1];
+    }
+
     public function test_full_otp_signup_verify_recover_and_password_set_journey(): void
     {
         $ip = '203.0.113.31';
@@ -106,8 +116,7 @@ final class EndToEndPasswordlessFlowTest extends IntegrationTestCase
         //    tokens in the fragment to an allow-listed target.
         $recover = $this->app->handle($this->req('POST', '/recover', body: ['email' => $email], ip: $ip));
         $this->assertSame(200, $recover->status);
-        $recoveryCode = $this->mailedCode();
-        $hash = hash('sha256', $recoveryCode);
+        $hash = $this->mailedTokenHash();
 
         $link = $this->app->handle($this->req('GET', '/verify', query: [
             'token_hash' => $hash,
@@ -140,7 +149,7 @@ final class EndToEndPasswordlessFlowTest extends IntegrationTestCase
         $ip = '203.0.113.32';
         $email = 'fallback@example.com';
         $this->app->handle($this->req('POST', '/otp', body: ['email' => $email], ip: $ip));
-        $hash = hash('sha256', $this->mailedCode());
+        $hash = $this->mailedTokenHash();
 
         $res = $this->app->handle($this->req('GET', '/verify', query: [
             'token_hash' => $hash,

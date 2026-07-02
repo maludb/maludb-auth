@@ -85,15 +85,29 @@ final class VerifyController
                 (string) ($request->header('user-agent') ?? ''),
             );
 
-            return Response::redirect($redirect . '#' . $this->successFragment($issued, $type));
+            return Response::redirect($this->withFragment($redirect, $this->successFragment($issued, $type)));
         } catch (\Throwable) {
             // Generic failure fragment — no cause disclosed, no exception detail.
-            return Response::redirect($redirect . '#' . http_build_query([
+            return Response::redirect($this->withFragment($redirect, http_build_query([
                 'error' => 'access_denied',
                 'error_code' => 'otp_expired',
                 'error_description' => 'Email link is invalid or has expired',
-            ]));
+            ])));
         }
+    }
+
+    /**
+     * Append token params to the redirect's fragment. If the (allow-listed)
+     * target already carries a fragment — e.g. a hash-router SPA URL like
+     * 'https://app/#/callback' — join with '&' so the params land in the SAME
+     * fragment; a second '#' would make the browser fold everything into one
+     * fragment and the client could never parse access_token out of it.
+     */
+    private function withFragment(string $url, string $params): string
+    {
+        $separator = str_contains($url, '#') ? '&' : '#';
+
+        return $url . $separator . $params;
     }
 
     private function successFragment(IssuedTokens $issued, string $type): string

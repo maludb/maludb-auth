@@ -223,7 +223,7 @@ final class App
             $this->users, $this->sessions, $this->audit,
             $this->password, $this->csrf, $this->otp, $this->config,
         );
-        $recover = new RecoverController($this->otp, $this->users);
+        $recover = new RecoverController($this->otp, $this->users, $this->audit);
         $otpCtrl = new OtpController($this->otp);
         $verify = new VerifyController($this->otp, $this->responder, $this->redirects, $this->config);
         $admin = new AdminUsersController($this->users, $this->audit, $this->password);

@@ -99,13 +99,22 @@ final class RateLimit implements MiddlewareInterface
             };
         }
 
+        // PUT /user carrying a password is the ONLY way to submit a reauth
+        // nonce guess; throttle those attempts (metadata-only updates are not
+        // rate-limited so ordinary profile edits stay unthrottled).
+        if ($request->method === 'PUT' && $this->pathEndsWith($path, '/user')) {
+            $pw = $request->input('password');
+            return (is_string($pw) && $pw !== '') ? 'password_update' : null;
+        }
+
         return match (true) {
-            $this->pathEndsWith($path, '/signup')    => 'signup',
-            $this->pathEndsWith($path, '/recover')   => 'recover',
-            $this->pathEndsWith($path, '/verify')    => 'verify',
+            $this->pathEndsWith($path, '/signup')        => 'signup',
+            $this->pathEndsWith($path, '/recover')       => 'recover',
+            $this->pathEndsWith($path, '/reauthenticate') => 'reauth',
+            $this->pathEndsWith($path, '/verify')        => 'verify',
             $this->pathEndsWith($path, '/otp'),
-            $this->pathEndsWith($path, '/magiclink') => 'otp',
-            $this->pathEndsWith($path, '/resend')    => 'resend',
+            $this->pathEndsWith($path, '/magiclink')     => 'otp',
+            $this->pathEndsWith($path, '/resend')        => 'resend',
             default => null,
         };
     }

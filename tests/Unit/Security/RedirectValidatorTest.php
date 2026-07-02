@@ -72,6 +72,32 @@ final class RedirectValidatorTest extends TestCase
         );
     }
 
+    public function test_host_only_wildcard_entry_rejects_suffixed_attacker_host(): void
+    {
+        // The dangerous form: a '*' entry that ends at the host with no path
+        // separator. A raw prefix compare would accept the attacker's host.
+        $v = new RedirectValidator('http://localhost:3000', ['https://app.example.com*']);
+
+        $this->assertSame(
+            'http://localhost:3000',
+            $v->resolve('https://app.example.com.evil.com/phish'),
+        );
+        // The legitimate origin still passes.
+        $this->assertSame(
+            'https://app.example.com/callback',
+            $v->resolve('https://app.example.com/callback'),
+        );
+    }
+
+    public function test_wildcard_does_not_match_different_port(): void
+    {
+        $v = new RedirectValidator('http://localhost:3000', ['http://localhost:3000/*']);
+        $this->assertSame(
+            'http://localhost:3000',
+            $v->resolve('http://localhost:4000/x'),
+        );
+    }
+
     public function test_dangerous_schemes_fall_back(): void
     {
         $v = $this->validator();
