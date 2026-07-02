@@ -345,11 +345,12 @@ namespace Maludb\Auth\Http;
 
 final class Request
 {
+    public readonly string $method;
     private array $headersLower;
     private array $body;
 
     public function __construct(
-        public readonly string $method,
+        string $method,
         public readonly string $path,
         private array $query = [],
         array $headers = [],
@@ -357,6 +358,10 @@ final class Request
         private array $cookies = [],
         public readonly string $ip = '',
     ) {
+        // Normalize the HTTP method to canonical uppercase. Without this,
+        // isUnsafeMethod() (case-sensitive) would treat `post` as a SAFE method,
+        // and CsrfGuard/RateLimit would be bypassed by a lowercase-verb request.
+        $this->method = strtoupper(trim($method));
         $this->headersLower = [];
         foreach ($headers as $k => $v) {
             $this->headersLower[strtolower($k)] = $v;
