@@ -5,7 +5,7 @@ namespace Maludb\Auth\Security;
 
 use PDO;
 
-final class RateLimiter
+final class RateLimiter implements RateLimiterInterface
 {
     public function __construct(private PDO $pdo) {}
 
